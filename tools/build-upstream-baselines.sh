@@ -146,7 +146,8 @@ done
 log "results"
 fail=0
 for k in "${ORDER[@]}"; do
-  printf '%-80s %s\n' "$k" "${RESULTS[$k]}"
-  [[ ${RESULTS[$k]} == PASS || $k == "${INFO_ONLY:-}" ]] || fail=1
+  tag=; [[ ${INFO[$k]} == 1 ]] && tag=" [informational]"
+  printf '%-80s %s%s\n' "$k" "${RESULTS[$k]}" "$tag"
+  [[ ${RESULTS[$k]} == PASS || ${INFO[$k]} == 1 ]] || fail=1
 done
 exit $fail

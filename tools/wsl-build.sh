@@ -18,6 +18,20 @@ export PS5_PAYLOAD_SDK="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
 SCE_STUBS="${PS5_SCE_STUBS_DIR:-/opt/src/sdk/sce_stubs}"
 MODE="${1:-build}"
 
+# Upstream ShadowMountPlus releases are built with clang 18. Newer clang (21)
+# links its own crt files and moves the ELF entry point to 0x0, a layout that
+# has not been proven on a console, so prefer 18 when it is installed.
+# Override with UNIMOUNT_LLVM=<major> or LLVM_CONFIG=<path>.
+if [ -z "${LLVM_CONFIG:-}" ]; then
+    for major in "${UNIMOUNT_LLVM:-18}" 19 21; do
+        if [ -x "/usr/bin/llvm-config-$major" ]; then
+            export LLVM_CONFIG="/usr/bin/llvm-config-$major"
+            break
+        fi
+    done
+fi
+echo "compiler: ${LLVM_CONFIG:-default}"
+
 # shellcheck disable=SC1091
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
