@@ -14,3 +14,10 @@ src/web_index_asset.c
 refs/*
 docs/*
 /kraken-bridge/target/
+
+# UniMount local
+/_upstream/
+/build/
+/.impeccable/decision/
+/.impeccable/review/
+/.impeccable/mocks/
