@@ -71,8 +71,8 @@
     },
     "breakpoints": [
       { "name": "reflow", "value": "(max-width: 900px), (max-aspect-ratio: 1/1)" },
-      { "name": "job-strip-compact", "value": "(max-width: 1420px)", "purpose": "Job-strip meter shrinks to 3rem; secondary figures drop; shelf filter narrows to 10rem." },
-      { "name": "job-strip-no-meter", "value": "(max-width: 1300px)", "purpose": "Job-strip meter drops; the percentage or state word carries progress alone." }
+      { "name": "job-strip-compact", "value": "(max-width: 1420px)", "purpose": "Job-strip meter shrinks from 4rem to 3rem; shelf filter narrows to 10rem." },
+      { "name": "job-strip-no-meter", "value": "(max-width: 1300px)", "purpose": "Job-strip meter and remaining time drop; the percentage or state word carries progress alone." }
     ]
   },
   "components": [
