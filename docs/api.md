@@ -314,8 +314,12 @@ fallback and title-prefix matching. This reports presence independently of
 fakelib policy or whether an overlay is currently mounted.
 
 Every game item also contains `last_launch`: `null` when no launch of the title
-was observed, otherwise `{"id", "outcome", "at", "short_error", "category"}`
-from the newest launch record (see [Launch diagnostics](#launch-diagnostics)).
+was observed, otherwise `{"id", "outcome", "at", "short_error", "category",
+"observation_interrupted"}` from the newest launch record (see
+[Launch diagnostics](#launch-diagnostics)). `outcome` is always the resolved
+value: a launch that UniMount could not finish observing (restart, update,
+lost process) reads `observation_interrupted`, never a stale
+`launch_in_progress`.
 A title that was only mounted or registered has `last_launch: null`.
 
 Icon requests without `size` return the original PNG. `size=thumb` returns a

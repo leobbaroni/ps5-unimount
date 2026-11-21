@@ -94,6 +94,30 @@ static int64_t wall_time_ms(void) {
 
 static void *diag_thread_main(void *arg);
 
+// Is the recorded PID still the same application? Mirrors the lifecycle
+// watcher: kill(pid, 0) for existence (EPERM still means alive) and
+// sceKernelGetAppInfo() for the title and app id, so a recycled PID that now
+// runs something else does not match.
+static sm_diag_process_state_t probe_process(pid_t pid, const char *title_id,
+                                             uint32_t app_id) {
+  if (pid <= 0)
+    return SM_DIAG_PROC_GONE;
+  if (kill(pid, 0) != 0 && errno == ESRCH)
+    return SM_DIAG_PROC_GONE;
+  app_info_t info;
+  memset(&info, 0, sizeof(info));
+  if (sceKernelGetAppInfo(pid, &info) != 0)
+    return SM_DIAG_PROC_OTHER; // Not an application any more.
+  size_t length = strnlen(info.title_id, sizeof(info.title_id));
+  if (length == 0 || length >= sizeof(info.title_id) ||
+      strncmp(info.title_id, title_id, sizeof(info.title_id)) != 0 ||
+      title_id[length] != '\0')
+    return SM_DIAG_PROC_OTHER;
+  if (app_id == 0 || info.app_id == 0)
+    return SM_DIAG_PROC_UNVERIFIED;
+  return info.app_id == app_id ? SM_DIAG_PROC_SAME : SM_DIAG_PROC_OTHER;
+}
+
 // Without the thread the store never loads: report it unavailable at once
 // instead of letting every reader wait DIAG_LOAD_WAIT_US.
 static void mark_store_unavailable(void) {
@@ -303,6 +327,8 @@ static bool write_launches_file(const char *text, size_t size) {
   return ok;
 }
 
+static void mark_dirty_locked(uint64_t now_us);
+
 static void load_persisted_locked(void) {
   size_t size = 0;
   char *text = read_small_file(DIAG_LAUNCHES_FILE, DIAG_LAUNCHES_MAX_BYTES, &size);
@@ -335,6 +361,19 @@ static void load_persisted_locked(void) {
           sm_diag_store_append(&g_diag.store, record.title_id, 0, 0);
       g_diag.store.next_id--; // append consumed an id; keep the stored one.
       *slot = record;
+      if (sm_diag_record_unfinished(slot)) {
+        // Never leave a launch "in progress" across a restart: re-attach to
+        // the same live application, or finalise it as interrupted.
+        sm_diag_process_state_t state =
+            probe_process(slot->pid, slot->title_id, slot->app_id);
+        uint64_t now_us = monotonic_time_us();
+        bool resumed = sm_diag_record_resolve_restored(slot, state, wall_time_ms(),
+                                                       now_us);
+        log_debug("  [DIAG] launch %" PRIu64 " (%s pid=%ld) %s after restart",
+                  slot->id, slot->title_id, (long)slot->pid,
+                  resumed ? "re-attached" : "finalised as observation_interrupted");
+        mark_dirty_locked(now_us);
+      }
       if (record.id >= g_diag.store.next_id)
         g_diag.store.next_id = record.id + 1u;
       loaded++;
@@ -713,6 +752,8 @@ static void poll_error_history(int64_t now_ms, uint64_t now_us) {
 
 static sm_diag_policy_t current_policy(const runtime_config_t *cfg) {
   sm_diag_policy_t policy = sm_diag_default_policy();
+  // Running is confirmed only by a positive PID probe (reconcile_liveness()).
+  policy.require_alive_probe = true;
   if (cfg->diagnostics_running_confirm_seconds)
     policy.running_confirm_seconds = cfg->diagnostics_running_confirm_seconds;
   return policy;
@@ -836,6 +877,87 @@ static void run_klog_scans(klog_job_t *jobs, size_t count,
   free(text);
 }
 
+typedef struct {
+  uint64_t id;
+  pid_t pid;
+  uint32_t app_id;
+  char title_id[SM_DIAG_TITLE_ID_SIZE];
+} liveness_job_t;
+
+// Bounded reconciliation: probe recorded game PIDs (about once a second until
+// running is confirmed, every 5 s after) so a missed exit cannot leave a
+// launch pending forever. Diagnostics thread only; the probes are two cheap
+// syscalls per PID and take no launch-path lock.
+static bool reconcile_liveness(const sm_diag_policy_t *policy) {
+  liveness_job_t jobs[8];
+  size_t count = 0;
+  uint64_t now_us = monotonic_time_us();
+  pthread_mutex_lock(&g_diag.store_mutex);
+  for (size_t i = 0; i < sm_diag_store_count(&g_diag.store) && count < 8u; ++i) {
+    sm_diag_record_t *rec = sm_diag_store_at(&g_diag.store, i);
+    if (!sm_diag_record_liveness_due(rec, now_us))
+      continue;
+    jobs[count].id = rec->id;
+    jobs[count].pid = rec->pid;
+    jobs[count].app_id = rec->app_id;
+    (void)strlcpy(jobs[count].title_id, rec->title_id, sizeof(jobs[count].title_id));
+    count++;
+  }
+  pthread_mutex_unlock(&g_diag.store_mutex);
+  for (size_t i = 0; i < count; ++i) {
+    sm_diag_process_state_t state =
+        probe_process(jobs[i].pid, jobs[i].title_id, jobs[i].app_id);
+    pthread_mutex_lock(&g_diag.store_mutex);
+    sm_diag_record_t *rec = sm_diag_store_find_id(&g_diag.store, jobs[i].id);
+    uint64_t probe_us = monotonic_time_us();
+    if (rec && rec->pid == jobs[i].pid) {
+      sm_diag_outcome_t before = rec->outcome;
+      if (sm_diag_record_note_liveness(rec, policy, state, wall_time_ms(), probe_us)) {
+        mark_dirty_locked(probe_us);
+        if (rec->outcome != before)
+          schedule_klog_scan_locked(rec, probe_us);
+      }
+    }
+    pthread_mutex_unlock(&g_diag.store_mutex);
+  }
+  return count > 0;
+}
+
+// At shutdown: launches whose process is already gone cannot be observed by
+// the next run either, so finalise them now. A game still running is saved in
+// progress and resolved by the next start (re-attach or interrupt).
+static void finalise_for_shutdown(void) {
+  liveness_job_t jobs[SM_DIAG_MAX_RECORDS];
+  size_t count = 0;
+  pthread_mutex_lock(&g_diag.store_mutex);
+  for (size_t i = 0; i < sm_diag_store_count(&g_diag.store); ++i) {
+    sm_diag_record_t *rec = sm_diag_store_at(&g_diag.store, i);
+    if (rec->restored || rec->pid <= 0 || !sm_diag_record_unfinished(rec))
+      continue;
+    jobs[count].id = rec->id;
+    jobs[count].pid = rec->pid;
+    jobs[count].app_id = rec->app_id;
+    (void)strlcpy(jobs[count].title_id, rec->title_id, sizeof(jobs[count].title_id));
+    count++;
+  }
+  pthread_mutex_unlock(&g_diag.store_mutex);
+  for (size_t i = 0; i < count; ++i) {
+    sm_diag_process_state_t state =
+        probe_process(jobs[i].pid, jobs[i].title_id, jobs[i].app_id);
+    if (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNVERIFIED)
+      continue;
+    pthread_mutex_lock(&g_diag.store_mutex);
+    sm_diag_record_t *rec = sm_diag_store_find_id(&g_diag.store, jobs[i].id);
+    if (rec && rec->pid == jobs[i].pid && sm_diag_record_unfinished(rec)) {
+      sm_diag_record_interrupt(rec, wall_time_ms(),
+                               "UniMount stopped before this was observed; the "
+                               "game process is gone");
+      mark_dirty_locked(monotonic_time_us());
+    }
+    pthread_mutex_unlock(&g_diag.store_mutex);
+  }
+}
+
 // Re-evaluate time-based stages, then run due kernel-log scans and the
 // error-history poll. Returns the next wake-up delay.
 static uint64_t periodic(const runtime_config_t *cfg) {
@@ -892,6 +1014,8 @@ static uint64_t periodic(const runtime_config_t *cfg) {
 
   run_klog_scans(jobs, job_count, &policy);
   free(jobs);
+  if (reconcile_liveness(&policy))
+    busy = true;
 
   if (window_open && now_us >= g_diag.next_error_poll_us) {
     poll_error_history(now_ms, now_us);
@@ -954,6 +1078,7 @@ static void *diag_thread_main(void *arg) {
     }
     wait_us = periodic(&cfg);
   }
+  finalise_for_shutdown();
   // Last record written before app.db, mdbg and the log are torn down.
   persist_if_due(monotonic_time_us(), true);
   return NULL;

@@ -53,7 +53,8 @@ static const char *const k_stage_names[SM_DIAG_STAGE_COUNT] = {
     "process_started", "running_confirmed", "exited"};
 static const char *const k_outcome_names[] = {
     "launch_in_progress", "running",      "exited_normally", "mount_failed",
-    "spawn_failed",       "exited_early", "crashed",         "launch_not_observed"};
+    "spawn_failed",       "exited_early", "crashed",         "launch_not_observed",
+    "observation_interrupted"};
 
 const char *sm_diag_state_name(sm_diag_state_t state) {
   return (unsigned)state < sizeof(k_state_names) / sizeof(k_state_names[0])
@@ -297,7 +298,9 @@ bool sm_diag_record_evaluate(sm_diag_record_t *rec,
             policy->running_confirm_seconds);
       } else if (now_mono_us >= start && now_mono_us - start >= confirm_us &&
                  !(rec->exit_pending && rec->exit_mono_us >= start &&
-                   rec->exit_mono_us - start < confirm_us)) {
+                   rec->exit_mono_us - start < confirm_us) &&
+                 (!policy->require_alive_probe ||
+                  rec->last_alive_mono_us >= start + confirm_us)) {
         sm_diag_record_set_stage(
             rec, SM_DIAG_STAGE_RUNNING_CONFIRMED, SM_DIAG_OK,
             wall_at(rec, start + confirm_us, now_ms, now_mono_us),
@@ -324,6 +327,195 @@ bool sm_diag_record_evaluate(sm_diag_record_t *rec,
          old_outcome != rec->outcome || old_has_diagnosis != rec->has_diagnosis ||
          strcmp(old_category, rec->diagnosis.category) != 0 ||
          old_evidence != rec->diagnosis.evidence_count;
+}
+
+static bool has_observed_evidence(const sm_diag_record_t *rec) {
+  return rec->native_error_count > 0 || rec->finding_count > 0 ||
+         rec->kernel_line_count > 0;
+}
+
+bool sm_diag_record_unfinished(const sm_diag_record_t *rec) {
+  if (rec->outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED)
+    return false;
+  if (rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS ||
+      rec->outcome == SM_DIAG_OUTCOME_RUNNING)
+    return true;
+  for (size_t i = 0; i < SM_DIAG_STAGE_COUNT; ++i) {
+    if (rec->stages[i].state == SM_DIAG_PENDING)
+      return true;
+  }
+  return rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK &&
+         rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK;
+}
+
+static void refresh_diagnosis(sm_diag_record_t *rec) {
+  sm_diag_diagnosis_t diagnosis;
+  rec->has_diagnosis = sm_diag_classify(rec, &diagnosis);
+  if (rec->has_diagnosis)
+    rec->diagnosis = diagnosis;
+  else
+    memset(&rec->diagnosis, 0, sizeof(rec->diagnosis));
+}
+
+void sm_diag_record_interrupt(sm_diag_record_t *rec, int64_t now_ms,
+                              const char *reason) {
+  bool started = rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK;
+  for (size_t i = 0; i < SM_DIAG_STAGE_COUNT; ++i) {
+    sm_diag_stage_t *stage = &rec->stages[i];
+    bool after_start = i == SM_DIAG_STAGE_RUNNING_CONFIRMED || i == SM_DIAG_STAGE_EXITED;
+    if (stage->state == SM_DIAG_PENDING ||
+        (after_start && started && stage->state == SM_DIAG_NOT_OBSERVED))
+      sm_diag_record_set_stage(rec, (sm_diag_stage_id_t)i, SM_DIAG_NOT_OBSERVED,
+                               0, 0, "%s", reason);
+  }
+  rec->exit_pending = false;
+  rec->interrupted = true;
+  // An observed verdict (crashed, mount_failed, ...) stays; only a launch
+  // without one becomes observation_interrupted.
+  if (rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS ||
+      rec->outcome == SM_DIAG_OUTCOME_RUNNING ||
+      rec->outcome == SM_DIAG_OUTCOME_LAUNCH_NOT_OBSERVED)
+    rec->outcome = SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED;
+  refresh_diagnosis(rec);
+  sm_diag_record_add_event(rec, now_ms, 0, "observation_interrupted", "%s",
+                           reason);
+}
+
+// Map a wall-clock time of an earlier daemon run onto this run's monotonic
+// clock; monotonic values of the earlier run are not comparable.
+static uint64_t rebase_mono(int64_t at_ms, int64_t now_ms, uint64_t now_mono_us) {
+  if (at_ms <= 0 || now_ms <= 0 || at_ms > now_ms)
+    return now_mono_us;
+  uint64_t age_us = (uint64_t)(now_ms - at_ms) * 1000u;
+  return age_us < now_mono_us ? now_mono_us - age_us : 1u;
+}
+
+bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
+                                     sm_diag_process_state_t state,
+                                     int64_t now_ms, uint64_t now_mono_us) {
+  if (!sm_diag_record_unfinished(rec))
+    return false;
+  bool live = rec->pid > 0 && state == SM_DIAG_PROC_SAME &&
+              rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK &&
+              rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK;
+  if (!live) {
+    sm_diag_record_interrupt(
+        rec, now_ms,
+        rec->pid > 0 ? "UniMount restarted before this was observed; the game "
+                       "process is gone or was replaced"
+                     : "UniMount restarted before this was observed");
+    return false;
+  }
+  // The same application is still running: keep observing it.
+  for (size_t i = 0; i < SM_DIAG_STAGE_COUNT; ++i) {
+    if (rec->stages[i].at_ms > 0)
+      rec->stages[i].mono_us = rebase_mono(rec->stages[i].at_ms, now_ms, now_mono_us);
+  }
+  for (size_t i = 0; i < rec->timeline_count; ++i)
+    rec->timeline[i].mono_us = rebase_mono(rec->timeline[i].at_ms, now_ms, now_mono_us);
+  rec->created_mono_us = rebase_mono(rec->created_ms, now_ms, now_mono_us);
+  rec->process_start_mono_us = rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].mono_us;
+  rec->exit_pending = false;
+  rec->exit_mono_us = 0;
+  rec->exit_ms = 0;
+  rec->launch_failed = false;
+  rec->launch_failed_mono_us = 0;
+  rec->restored = false;
+  rec->interrupted = false;
+  rec->last_alive_mono_us = now_mono_us;
+  rec->next_liveness_mono_us = 0;
+  rec->gone_probes = 0;
+  sm_diag_record_add_event(rec, now_ms, now_mono_us, "observation_resumed",
+                           "pid=%ld app_id=0x%08X still running after restart",
+                           (long)rec->pid, rec->app_id);
+  return true;
+}
+
+bool sm_diag_record_liveness_due(const sm_diag_record_t *rec,
+                                 uint64_t now_mono_us) {
+  return !rec->restored && !rec->interrupted && rec->pid > 0 &&
+         rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK &&
+         rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK &&
+         now_mono_us >= rec->next_liveness_mono_us;
+}
+
+static void conclude_exit(sm_diag_record_t *rec, uint64_t exit_mono,
+                          int64_t exit_ms, const char *detail) {
+  rec->exit_pending = false;
+  rec->exit_mono_us = exit_mono;
+  rec->exit_ms = exit_ms;
+  sm_diag_record_set_stage(rec, SM_DIAG_STAGE_EXITED, SM_DIAG_OK, exit_ms,
+                           exit_mono, "%s", detail);
+  sm_diag_record_add_event(rec, exit_ms, exit_mono, "exit_reconciled", "%s",
+                           detail);
+}
+
+bool sm_diag_record_note_liveness(sm_diag_record_t *rec,
+                                  const sm_diag_policy_t *policy,
+                                  sm_diag_process_state_t state, int64_t now_ms,
+                                  uint64_t now_mono_us) {
+  if (!sm_diag_record_liveness_due(rec, UINT64_MAX))
+    return false;
+  const uint64_t confirm_us = (uint64_t)policy->running_confirm_seconds * 1000000u;
+  const uint64_t start = rec->process_start_mono_us;
+  bool confirmed = rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_OK;
+  // Probe about once a second until confirmed, then every five seconds.
+  rec->next_liveness_mono_us = now_mono_us + (confirmed ? 5000000u : 1000000u);
+  if (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNVERIFIED) {
+    rec->last_alive_mono_us = now_mono_us;
+    rec->gone_probes = 0;
+    return sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
+  }
+  char detail[SM_DIAG_DETAIL_SIZE];
+  if (rec->exit_pending) {
+    // NOTE_EXIT was observed; the lifecycle's final exit normally follows after
+    // its same-app handoff grace. Conclude only if it never does.
+    uint64_t grace = (uint64_t)SM_DIAG_EXIT_FINAL_GRACE_SECONDS * 1000000u;
+    if (now_mono_us < rec->exit_mono_us || now_mono_us - rec->exit_mono_us < grace)
+      return false;
+    snprintf(detail, sizeof(detail),
+             "pid=%ld exited (NOTE_EXIT observed); final exit not reported",
+             (long)rec->pid);
+    conclude_exit(rec, rec->exit_mono_us, rec->exit_ms, detail);
+    (void)sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
+    return true;
+  }
+  // Wait for a second "gone" probe: a same-app handoff announces itself first.
+  if (++rec->gone_probes < SM_DIAG_GONE_PROBES)
+    return false;
+  // The process vanished without an observed exit: alive at last_alive,
+  // gone now.
+  uint64_t last_alive = rec->last_alive_mono_us > start ? rec->last_alive_mono_us : start;
+  double alive_s = (double)(last_alive - start) / 1e6;
+  double gone_s = now_mono_us > start ? (double)(now_mono_us - start) / 1e6 : 0.0;
+  if (!confirmed && last_alive >= start + confirm_us) {
+    sm_diag_record_set_stage(rec, SM_DIAG_STAGE_RUNNING_CONFIRMED, SM_DIAG_OK,
+                             now_ms, start + confirm_us,
+                             "process seen alive %.1f s after start", alive_s);
+    confirmed = true;
+  }
+  if (confirmed || now_mono_us < start + confirm_us) {
+    // Confirmed earlier: exited_normally. Gone before the confirmation time
+    // was even reached: exited_early.
+    snprintf(detail, sizeof(detail),
+             "exit not observed directly: pid=%ld gone %.1f s after start "
+             "(last seen alive at %.1f s)",
+             (long)rec->pid, gone_s, alive_s);
+    conclude_exit(rec, now_mono_us, now_ms, detail);
+    (void)sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
+    return true;
+  }
+  // Gone after the confirmation time without a probe proving it lived that
+  // long: whether it ran long enough is unknown.
+  snprintf(detail, sizeof(detail),
+           "exit not observed directly: pid=%ld gone %.1f s after start "
+           "(last seen alive at %.1f s)",
+           (long)rec->pid, gone_s, alive_s);
+  conclude_exit(rec, now_mono_us, now_ms, detail);
+  sm_diag_record_interrupt(rec, now_ms,
+                           "process gone before running could be confirmed or "
+                           "refuted");
+  return true;
 }
 
 bool sm_diag_record_is_active(const sm_diag_record_t *rec) {
@@ -542,6 +734,18 @@ sm_diag_record_t *sm_diag_store_apply(sm_diag_store_t *store,
                              input->status);
     break;
   case SM_DIAG_EV_PROCESS_STARTED: {
+    // A record re-attached after a restart already owns this live process.
+    rec = find_by_pid(store, input->pid);
+    if (rec && strcmp(rec->title_id, input->title_id) == 0 && !rec->interrupted &&
+        rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK &&
+        (rec->app_id == 0 || input->app_id == 0 || rec->app_id == input->app_id)) {
+      if (rec->app_id == 0)
+        rec->app_id = input->app_id;
+      sm_diag_record_add_event(rec, at, mono, "process_seen_again",
+                               "pid=%ld app_id=0x%08X", (long)input->pid,
+                               input->app_id);
+      break;
+    }
     rec = find_waiting_launch(store, policy, input, true);
     if (!rec) {
       // A spawn-timeout or LAUNCH_FAILED verdict can be overtaken by the
@@ -1101,7 +1305,11 @@ static void collect_raw_evidence(const sm_diag_record_t *rec,
 
 bool sm_diag_classify(const sm_diag_record_t *rec, sm_diag_diagnosis_t *out) {
   memset(out, 0, sizeof(*out));
-  if (!sm_diag_outcome_is_failure(rec->outcome))
+  // An interrupted launch keeps a diagnosis only for evidence observed before
+  // the interruption (native error, finding, kernel-log line).
+  if (!sm_diag_outcome_is_failure(rec->outcome) &&
+      !(rec->outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED &&
+        has_observed_evidence(rec)))
     return false;
   for (size_t i = 0; i < sizeof(k_classify_rules) / sizeof(k_classify_rules[0]); ++i) {
     sm_diag_diagnosis_t candidate;
@@ -1767,6 +1975,8 @@ struct json_object *sm_diag_record_summary_json(const sm_diag_record_t *rec) {
                          rec->has_diagnosis
                              ? json_object_new_string(rec->diagnosis.category)
                              : NULL);
+  json_object_object_add(object, "observation_interrupted",
+                         json_object_new_boolean(rec->interrupted));
   return object;
 }
 
@@ -2196,13 +2406,7 @@ bool sm_diag_record_from_json(struct json_object *object,
       copy_text(rec->diagnosis.evidence[rec->diagnosis.evidence_count++], SM_DIAG_TEXT_SIZE,
                 json_object_get_string(json_object_array_get_idx(evidence, i)));
   }
-  // A launch that was still being observed when the previous daemon run ended
-  // cannot be followed any further: keep the last observed state as is.
-  if (!rec->interrupted && sm_diag_record_is_active(rec)) {
-    rec->interrupted = true;
-    sm_diag_record_add_event(rec, rec->created_ms, 0, "observation_interrupted",
-                             "UniMount restarted while this launch was observed");
-  }
+  // Unfinished launches are resolved by sm_diag_record_resolve_restored().
   rec->restored = true;
   return true;
 }
