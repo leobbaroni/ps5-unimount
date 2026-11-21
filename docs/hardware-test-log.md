@@ -157,12 +157,43 @@ entries from the console's web browser had been added since the first session.
   (`observation_resumed`, then `running`). The close request then failed (`close_failed`, the
   system refused to end the application), and within a minute the console stopped answering and
   left the network. The same sequence with Title B (an `.exfat` image) had passed in section I.
-  Traced by reading the code, not yet confirmed from the console's log: the copy being replaced
-  shut down and unmounted the layers it had added to the running game's sandbox, which for a
-  debug `.pkg` title include the emulation library the game runs on; the new copy never owned the
-  game. Commit `2e3e1a6` changes this: UniMount waits instead of starting or taking over while one
-  of its games runs, defers a stop request until the game has closed, and on a forced stop leaves
-  the game's layers in place. That commit has run on the host only.
+  The old copy's log confirmed the cause: eight seconds into the game its shutdown logged
+  `[FAKELIB] directory unmounted` for the font, USB and `/data` layers and
+  `[FAKELIB] fakelib2 unmounted: ... -> .../common/lib`, the library overlay a debug `.pkg` game
+  runs on, while `app0/kraken` stayed mounted. The later close blocked for 15 s and returned
+  `0x80020003`. After the restart the console's error history had one new entry, `CE-108262-9`.
+
+### K. Third session: start, replacement and stop while a game runs
+
+Run on 2026-11-21 after the console was restarted, on the builds of commits `2e3e1a6`, `920a1da`
+and `8ceab2c` (the last reported as `0.1.1`, `v0.1.0-14-g8ceab2`). Since `2e3e1a6` a copy that
+starts while one of UniMount's games is running waits until the game is closed before it does
+anything, including replacing an older copy.
+
+- Launch test on `8ceab2c`: Title B and the Orbit Store app; on `2e3e1a6` also Title A. Pass.
+- Replacement with no game running: the old copy logged `stop request 1 received (signal)` and
+  `cleanup complete for signal`, the new one `Previous instance stopped, continuing startup`. Pass.
+- Replacement while Title B (image) ran: the new copy logged
+  `[STARTUP] <TITLE_B> is running; waiting for it to close before starting`; the game kept running
+  and closed normally; the old copy then stopped and the new one started
+  (`started after waiting 24 s`). Pass.
+- **Replacement while Title A (debug `.pkg`) ran, the case that failed in J:** same sequence, the
+  game closed normally, the record ended `exited_normally`, no new error-history entry. Pass, on
+  `920a1da` and again on `8ceab2c`.
+- Found and fixed during these runs: a copy that had waited kept writing into the rotated log
+  (`920a1da`), and the old copy announced a deferral for a game that had just closed (`8ceab2c`).
+- **Stopping UniMount while Title A ran: failure.** One stop request was sent with PS5 Payload
+  Manager's kill route. UniMount logged `stop request 1 received (signal)` and
+  `deferred: <TITLE_A> is running` and left the game's layers alone, but Payload Manager sends
+  `SIGKILL` 1.5 seconds after `SIGTERM`, so UniMount was killed with every layer still mounted.
+  Closing the game afterwards returned `0x80020003` and the console went down again.
+
+What these two failures establish: when a game started from a debug `.pkg` ends and no UniMount is
+alive to remove its sandbox layers first, the console goes down, whether those layers were touched
+(J) or left intact (K). Replacing UniMount no longer leads there. Stopping it with a payload
+manager's kill during such a game still does, and cannot be prevented from inside a process that
+is killed 1.5 seconds later. The same stop with Title B (image) running was run once on the earlier
+build and was harmless (section J, "Interrupted record").
 
 ## Repeating these checks
 

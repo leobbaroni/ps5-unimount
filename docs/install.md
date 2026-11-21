@@ -48,9 +48,13 @@ Do not run the standalone BackPork payload while fakelib is enabled in UniMount.
 To update later, install the new version from the same list and load it. The new copy stops the old
 one and carries on with the same library.
 
+If a game that UniMount mounted is running when you load the new version, the new copy waits,
+shows a notification, and takes over once the game is closed.
+
 > [!WARNING]
-> Load or update UniMount only while no game is running. Replacing it in the middle of a game
-> started from a debug `.pkg` took the test console down (see the test log, section J).
+> Do not stop UniMount while a game started from a debug `.pkg` is running, for example with the
+> kill button in PS5 Payload Manager. That game then has nobody to release its mounts, and closing
+> it has taken the test console down (test log, sections J and K). Close the game first.
 
 ## Install by hand
 
