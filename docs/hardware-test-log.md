@@ -239,6 +239,8 @@ The commands used by hand in these runs are scripted in `tools/hwtest/`, for a P
 - `layout_probe.py --console http://<host>:10101` measures the interface in the console's browser;
   open its address there with `console_check.py --console <host> helper browse http://<pc>:8766/`,
   which needs the `unimount-hwtest` helper payload loaded.
+- `console_check.py --console <host> helper sigkill <pid>` sends SIGKILL to that process (the
+  second half of PS5 Payload Manager's kill); the helper answers `ok` or `err <errno text>`.
 
 Both scripts were checked against the development mock server only; the commands they wrap are
 the ones recorded above.

@@ -9,6 +9,7 @@
 #include <sys/sysctl.h>
 
 #include "sm_runtime.h"
+#include "sm_adopt.h"
 #include "sm_ampr_updater.h"
 #include "sm_api_service.h"
 #include "sm_types.h"
@@ -26,6 +27,7 @@
 #include "sm_image.h"
 #include "sm_pkg_backport.h"
 #include "sm_path_utils.h"
+#include "sm_sandbox_record.h"
 #include "sm_scan.h"
 #include "sm_scanner.h"
 #include "sm_time.h"
@@ -653,12 +655,30 @@ static bool startup_poll_sleep(void) {
 
 static char g_startup_waited_title[MAX_TITLE_ID];
 static uint64_t g_startup_waited_us;
+static bool g_adopt_dry_run_logged;
+static unsigned g_adopt_stop_files;
+
+// Stop requests while adopting: no predecessor runs, so the STOP file is ours.
+static unsigned adoption_stop_requests(bool *by_signal) {
+  if (remove(KILL_FILE) == 0)
+    ++g_adopt_stop_files;
+  *by_signal = g_stop_signals != 0;
+  return (unsigned)g_stop_signals + g_adopt_stop_files;
+}
 
 // Before any takeover, mount, scan, hook or service: stay passive while a
 // managed game runs. Without a predecessor the STOP file also ends the wait
 // (with one, it belongs to the predecessor). False when stopped.
+// Without a live predecessor, a verified session record is adopted instead
+// (sm_adopt.c); with one, adoption is only evaluated and logged.
 static bool wait_while_managed_game_runs(void) {
+  static const sm_adopt_hooks_t adopt_hooks = {
+      .stop_requests = adoption_stop_requests,
+      .process_name = PAYLOAD_NAME,
+  };
   bool waiting = false;
+  bool adoption_checked = false;
+  bool predecessor_seen = false;
   uint64_t started_us = monotonic_time_us();
   char title_id[MAX_TITLE_ID];
   for (;;) {
@@ -680,6 +700,27 @@ static bool wait_while_managed_game_runs(void) {
         g_startup_waited_us += now_us > started_us ? now_us - started_us : 0;
       }
       return true;
+    }
+    if (predecessor > 0) {
+      predecessor_seen = true;
+      if (!g_adopt_dry_run_logged) {
+        g_adopt_dry_run_logged = true;
+        sm_adopt_dry_run(title_id);
+      }
+    } else if (predecessor == 0 && (!adoption_checked || predecessor_seen)) {
+      // First check, or the predecessor went away while the game runs.
+      adoption_checked = true;
+      predecessor_seen = false;
+      sm_adopt_result_t adopted = sm_adopt_session(title_id, &adopt_hooks);
+      if (adopted == SM_ADOPT_STOPPED) {
+        (void)strlcpy(g_startup_waited_title, title_id,
+                      sizeof(g_startup_waited_title));
+        return false;
+      }
+      if (adopted == SM_ADOPT_RELEASED) {
+        adoption_checked = false;
+        continue;  // the startup decision is made again from the top
+      }
     }
     if (!waiting) {
       if (predecessor == 0 && remove(KILL_FILE) == 0)
@@ -963,6 +1004,7 @@ int main(void) {
     goto shutdown;
   }
   sm_ownership_begin();
+  (void)sm_session_record_start();
   if (!sm_kraken_compat_start())
     log_debug("  [COMPAT] listener thread unavailable: %s", strerror(errno));
   if (!sm_kraken_auto_start())
@@ -1044,6 +1086,8 @@ shutdown:
   sm_shellcore_hooks_stop();
   stop_game_lifecycle_watcher();
   sm_shellcore_service_stop();
+  // Writes the final session state: removed when empty, kept layers recorded.
+  sm_session_record_stop();
   sm_scanner_shutdown();
   // Diagnostics reads mdbg and app.db and logs: stop it before those go.
   sm_diag_stop();

@@ -22,7 +22,10 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
    A retail game or a system app does not delay startup. This is the rule
    UniMount already follows for a game running under real Kraken Mount, now
    applied to every predecessor and to a start without one (recovery after a
-   crash).
+   crash). Before it waits, UniMount evaluates the session record of the
+   game's owner (see "Session record and adoption"): with a live predecessor
+   it only logs whether it could adopt the session; without one it adopts a
+   record that passes every check instead of waiting.
 1. An older `shadowmountplus.elf` (real ShadowMountPlus or an older UniMount)
    is asked to exit (one SIGTERM per instance) and awaited for up to 60 s;
    then step 0 is checked again. An instance still alive after 60 s while a
@@ -128,11 +131,13 @@ the console going down. Deferring at least keeps the game itself intact
 until then. To stop UniMount while such a game runs, close the game first,
 or use the STOP file (never followed by a kill) and then close the game.
 
-Kept or orphaned layers have no owner afterwards: a later instance does not
-adopt or remove them (it stays passive while a managed game runs, see step
-0). The `/system_ex/app/<TID>` stack is released by the scanner's normal
-cleanup once nothing uses it; sandbox layers stay until ShellCore or a
-reboot removes the sandbox.
+Kept or orphaned layers are listed in the session record. A later instance
+that starts while the game still runs adopts them and removes them when the
+game exits (see "Session record and adoption"); when the record is missing
+or fails a check, it stays passive as before. The `/system_ex/app/<TID>`
+stack is released by the scanner's normal cleanup once nothing uses it;
+sandbox layers nobody adopted stay until ShellCore or a reboot removes the
+sandbox.
 
 Log lines (in `debug.log`; after the next start in `debug.log.1`):
 
@@ -156,6 +161,170 @@ Log lines (in `debug.log`; after the next start in `debug.log.1`):
 | `  [BKP][NSFS] shutdown kept redirects of live game: title=<TID> pid=<pid> count=<n>` | Backport redirects kept. |
 | `  [LINK] shutdown kept /system_ex/app/<TID> of live game` | Title stack kept; image teardown is skipped. |
 | `[SHUTDOWN] cleanup complete for <signal\|STOP file ...\|reason>` | End of any shutdown that followed a stop request. |
+
+## Session record and adoption
+
+None of the behaviour in this section has been verified on hardware yet.
+
+### The record
+
+The owning instance keeps `/data/shadowmount/sandbox-session.json`
+(`src/sm_sandbox_record.c`, format in `src/sm_unimount_logic.c`). It lists
+exactly what the owner removes when the game exits:
+
+- every entry of the fakelib session that the owner's cleanup acts on, in
+  session order:
+  - each sandbox mount this instance made itself (`owned`): label (`game`,
+    `global`, `fakelib2`, `directory`), file system type (`unionfs` or
+    `nullfs`), source, mount path, `f_fsid` (both words), read-only flag and
+    whether the owner created the mount directory;
+  - each directory the owner created only as a parent of mount points (for
+    example `preinst` and `preinst/common` above the font mount): label
+    `parent`, type `none`, empty source, its path, `created` true. It is
+    removed with `rmdir` after its children, as by the owner.
+
+  Mounts that ShellCore made and UniMount only reused are not listed,
+  because the owner does not unmount them either;
+- every installed NSFS backport redirect set of the same title: backport
+  root, the sandbox's NSFS `app0` path, its `st_dev` and `f_fsid`, and each
+  redirect destination in creation order.
+
+The top level holds `format` (1), `version`, `boot_time` (the
+`kern.boottime` seconds that `owner.json` also stores), `owner_pid`,
+`game_pid` (0 until the game process is known), `app_id` (AppInfo of
+`game_pid`), `title_id`, `sandbox_app0`, `lib_mount` (the `common/lib` mount
+path) and `complete` (false when a mount's `f_fsid` could not be read, or
+the redirect destinations did not fit 64 KiB).
+
+`sm_fakelib.c` and `sm_pkg_backport.c` hand a snapshot to the record module
+whenever their session changes (on the same unlock that publishes the
+session kind). That copy is the only work done under their locks. A writer
+thread writes the file (temporary file, `fsync`, `rename`) and removes it
+when nothing is left. A write error is logged once and otherwise ignored;
+a launch never waits for the file. At startup the writer replaces or
+removes a record left by an earlier instance. A clean shutdown removes the
+record unless layers were kept for a live game; those stay recorded.
+
+### Evaluation
+
+Step 0 of the startup order evaluates the record when a managed game is
+running. All of these must hold:
+
+- the record parses (format 1, every field present and well formed, title
+  id valid, every path inside `/mnt/sandbox/<TID>_NNN`, at most 24 mounts,
+  2 redirect sets and 256 redirects per set, no string longer than
+  `MAX_PATH`, a `parent` entry has no source and `created` true) and is
+  `complete`;
+- it lists at least one entry (a mount, a parent directory or a redirect
+  set);
+- `boot_time` equals this boot's;
+- `game_pid` is set and alive, its AppInfo has the recorded `app_id` and
+  title, and that `app_id` is the running big app (and its title, when the
+  startup check could determine it);
+- every recorded mount (not the `parent` entries, which are not mounts) is
+  in the mount table exactly once by `f_fsid`, on
+  the recorded path, with the recorded type and source (the owner's own
+  source rule, allowing for `<above>:` and a source cut off at `MNAMELEN`),
+  and is the topmost mount on that path;
+- every redirect set's NSFS mount is present on its path with the recorded
+  `f_fsid`.
+
+With a live predecessor (today's wait) this is a dry run: one line,
+nothing else changes. Without one, a failed check is logged and UniMount
+waits passively as before. The record is evaluated on the first poll of
+the wait, and once more if a predecessor that was alive disappears while
+the game still runs.
+
+### Adoption
+
+When every check passes and no predecessor runs, the new copy adopts the
+session and does nothing else (no takeover, no ShellCore hooks or service,
+no scanner, no API):
+
+1. It loads the recorded entries, in their order and with parent
+   directories as entries without a mount, into its own fakelib session and the
+   redirect sets into its backport sessions, takes the thread name
+   `shadowmountplus.elf` (so a copy started after it sees a predecessor and
+   does not adopt the same session again), restarts the record writer under
+   its own pid, logs and notifies once.
+2. It watches the game pid with `kqueue` (`EVFILT_PROC`, `NOTE_EXIT`) and a
+   250 ms liveness poll in the main thread.
+3. When the game exits it runs the owner's own `cleanup_fakelib_mount()`
+   over the adopted entries: newest first, dependents (such as
+   `app0/kraken`, or the font mount below `preinst/common`) before what
+   they sit on, parent directories removed with `rmdir`, non-forced unmount after checking
+   that the path's topmost mount still has the recorded `f_fsid` (a mount
+   that no longer matches is never unmounted), each unmount logged. Busy
+   mounts are retried every 250 ms for at most 10 s after the first busy
+   pass, as the owner does.
+4. Redirect sets are deleted with the owner's `cleanup_session_locked()`
+   (which checks the NSFS namespace first) at the point where the owner
+   finalizes a game exit: at least 1 s after the exit, and once the sandbox
+   is gone or 10 s have passed. A process of the same application (same
+   AppInfo `app_id` and title, another pid) found before then is a
+   same-application replacement: it runs without the adopted mounts (they
+   are not mounted again), and the redirect sets are left in place for it,
+   as the owner would.
+5. It logs the result, stops the writer (the record is removed when
+   everything was removed; mounts that stayed busy remain recorded) and
+   continues with the normal startup, which checks step 0 again from the
+   top.
+
+Stop requests while adopting follow the same rule as a running owner
+(`sm_stop_decide`, with the adopted game active): a first signal or STOP
+file defers the stop for an overlay session until the game has exited and
+its layers are removed, then the copy exits instead of continuing. A signal
+with an alias-only session removes the aliases at once (one non-forced pass)
+and exits. A second request with an overlay session exits at once and keeps
+the layers, which stay in the record for a later copy.
+
+### Limits
+
+- A game closed while no UniMount owns its layers (after the owner was
+  killed and before a new copy started) still ends the way it did before
+  this change: `sceSystemServiceKillApp` blocks about 15 s, returns
+  `0x80020003` and the console goes down.
+- Sessions of a version without the record (or with another record format)
+  cannot be adopted: there is nothing to verify them against.
+- A same-application replacement after adoption runs without the adopted
+  mounts.
+- A record written while the game was still starting (`game_pid` 0) or
+  just before the owner was killed may lag behind the live state by the
+  writer's delay. Such a record fails the checks and is refused; it never
+  leads to a partial removal.
+
+### Log lines
+
+| Line | Meaning |
+| --- | --- |
+| `[ADOPT] session record written: <TID> pid=<pid> app_id=0x<id> layers=<n> redirect_sets=<m>` | The owner (or an adopting copy) wrote the record. `layers` counts every entry, parent directories included. |
+| `[ADOPT] session record removed` | The record was removed because nothing is left to remove. |
+| `[ADOPT] cannot write\|remove\|format /data/shadowmount/sandbox-session.json: <error>` | First record error of this process; later errors are not logged. |
+| `[ADOPT] session record writer unavailable: <error>` | The writer thread could not start; no record is kept. |
+| `[ADOPT] would adopt <n> layer(s) of <TID> pid=<pid>` | Dry run with a live predecessor: every check passed. `<n>` counts mounts plus one per redirect set; parent directories are not counted (a session of parent directories only shows 0). |
+| `[ADOPT] refused: <reason>` | Evaluation failed (dry run or real); without a predecessor, the passive wait follows. |
+| `[ADOPT] adopted <n> layer(s) of <TID> pid=<pid>` | Adoption started. |
+| `[ADOPT] exit watch for pid=<pid> unavailable (<error>); polling` | `kqueue` could not watch the pid; only the 250 ms poll is used. |
+| `[ADOPT] stop request <n> received (signal\|STOP file)` | Each new stop request while adopting. |
+| `[ADOPT] stop deferred: <TID> is running (signal\|STOP file, <kind>)` | The stop waits for the game to exit and its layers to be removed. |
+| `[ADOPT] stopping now while <TID> is running (<reason>); its overlay layers are kept in the session record` | Second request with an overlay session. |
+| `[ADOPT] stopping now while <TID> is running (<reason>): <kind> in its sandbox, normal teardown` | Stop with an alias-only session. |
+| `[ADOPT] teardown retained <k> layer(s) of <TID>: <error>` | That teardown left aliases behind. |
+| `[ADOPT] <TID> pid=<pid> exited; removing the adopted layers` | The game exited. |
+| `[ADOPT] busy sandbox cleanup scheduled: <TID>` | A mount was busy; retries follow. |
+| `[ADOPT] sandbox cleanup wait ended; retaining <k> layer(s) of <TID>` | Mounts still busy after 10 s. |
+| `[ADOPT] cleanup retained <k> layer(s) of <TID>: <error>` | A non-busy error stopped the retries. |
+| `[ADOPT] busy redirect cleanup scheduled: <TID>` / `[ADOPT] redirect cleanup wait ended; retaining redirects: <TID>` / `[ADOPT] redirect cleanup retained for <TID>: <error>` | The same for redirect sets. |
+| `[ADOPT] <TID> restarted as pid=<pid> (same-application replacement); it runs without the adopted layers` | A replacement process was found. |
+| `[ADOPT] NSFS redirects of <TID> kept for pid=<pid>` | Its redirect sets are left in place. |
+| `[ADOPT] released <TID>: <k> of <n> layer(s) removed in <ms> ms` | End of adoption; `<ms>` counts from the game's exit. |
+
+The adopted cleanup also writes the owner's own lines:
+`  [FAKELIB] <label> unmounted: <source> -> <target>` per mount,
+`  [BKP][NSFS] redirects removed: title=<TID> count=<n> reason=adopted game exit`
+(or `redirects released with namespace` when the sandbox is already gone).
+The notification reads "UniMount: took over the layers of `<TID>`. They are
+removed when the game is closed."
 
 ## Kraken-compatible listener (`[compat]`)
 

@@ -533,6 +533,10 @@ static int64_t boot_time_seconds(void) {
   return (int64_t)boot.tv_sec;
 }
 
+int64_t sm_ownership_boot_time(void) {
+  return boot_time_seconds();
+}
+
 void sm_ownership_begin(void) {
   int64_t boot = boot_time_seconds();
   int64_t now = (int64_t)time(NULL);

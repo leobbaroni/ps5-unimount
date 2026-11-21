@@ -92,4 +92,7 @@ static const char *const g_no_no[SM_L10N_COUNT] = {
     /* English: UniMount: the running UniMount did not stop.\nThis copy was not started. */
     [SM_L10N_RESTART_ABANDONED] =
         "UniMount: the running UniMount did not stop.\nThis copy was not started.",
+    /* English: UniMount: took over the layers of %s.\nThey are removed when the game is closed. */
+    [SM_L10N_ADOPT_SESSION] =
+        "UniMount: took over the layers of %s.\nThey are removed when the game is closed.",
 };

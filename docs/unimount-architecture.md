@@ -23,6 +23,7 @@ UniMount's own additions (ownership, auto mount, diagnostics, key-art and launch
 | --- | --- | --- |
 | Entry and lifecycle | `src/main.c` | Startup and shutdown order, signal handling, STOP file, handoff from an older instance |
 | Takeover and ownership | `src/sm_takeover.c`, `src/sm_unimount_logic.c` (pure decisions, host-tested) | Kraken Mount detection and quit request, legacy mount release, `owner.json` ledger |
+| Session record and adoption | `src/sm_sandbox_record.c`, `src/sm_adopt.c`, `src/sm_unimount_logic.c` (record format and checks, host-tested) | `sandbox-session.json` writer; adopting a dead owner's sandbox layers at startup |
 | Kraken-compatible listener | `src/sm_kraken_compat.c` | Port 8097: `/api/state`, `/api/rescan`, `/api/quit` (always 409) |
 | Debug `.pkg` backend | `src/sm_kraken.c`, `kraken-bridge/`, `vendor/kraken/`, `src/kraken_assets.S` | Package header check (`sm_kraken_can_mount`), cache and index building, embedded ampr-emu-ng and PlayGo stub |
 | Automatic `.pkg` mount | `src/sm_kraken_auto.c` | Candidate tracking, stability wait, failure ledger; runs the storage job in `src/sm_api_service.c` (`run_kraken_job`) |
@@ -79,11 +80,11 @@ From `main()` in `src/main.c`.
 Startup:
 
 1. Initialise user service and app-install utilities; install signal handlers.
-2. Running managed game: if a big app runs (`sceSystemServiceGetAppIdOfRunningBigApp() > 0`) and its title is ours (`/user/app/<TID>/mount.lnk`, `mount_img.lnk` or `mount.lnk.cleanup`, or a nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be determined, stay passive (no signal to an older instance, no mount, scan, hook or service) and check again every 3 s; signals end the wait at once. Unmanaged apps (retail games, `NPXS` system apps) do not delay startup. Rule: `sm_startup_decide`.
+2. Running managed game: if a big app runs (`sceSystemServiceGetAppIdOfRunningBigApp() > 0`) and its title is ours (`/user/app/<TID>/mount.lnk`, `mount_img.lnk` or `mount.lnk.cleanup`, or a nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be determined, stay passive (no signal to an older instance, no mount, scan, hook or service) and check again every 3 s; signals end the wait at once. Unmanaged apps (retail games, `NPXS` system apps) do not delay startup. Rule: `sm_startup_decide`. Before waiting, the predecessor's session record is evaluated (`sm_adopt.c`): with a live predecessor only a dry-run line is logged; without one, a record that passes every check is adopted instead of waiting: the copy removes the recorded layers when the game exits, exactly as the owner would, and then repeats this step. See "Session record and adoption" in [`unimount-ownership.md`](unimount-ownership.md).
 3. Find an older `shadowmountplus.elf`; if one exists, ask it to exit (one SIGTERM per instance) and wait up to 60 s, then repeat step 2 (a game may have started meanwhile). If it is still alive after 60 s: while a big app runs it deferred its stop for that game, so wait for the app to close and keep waiting for it; otherwise exit without starting (`sm_restart_timeout_decide`). Two instances never run together. Set this process's thread name to `shadowmountplus.elf`.
 4. Clear a stale STOP file; rotate the log; load or migrate the configuration; initialise the scanner service.
 5. Wait for kstuff; stop a standalone BackPork if one runs.
-6. Kraken Mount takeover (`sm_takeover_run`), then write the ownership ledger.
+6. Kraken Mount takeover (`sm_takeover_run`), then write the ownership ledger and start the session record writer (which replaces or removes a record left by an earlier instance).
 7. Start the compatible listener (8097) and the automatic `.pkg` mount.
 8. Start mdbg, the ShellCore service and hooks, the launcher tile, the lifecycle watcher, the ShellCore flags monitor, the AMPR updater.
 9. Remount `/system_ex` writable, notify, clean stale mount directories, wait for `/dev/lvd2` to be released, clean staged links and duplicate title mounts, run app.db maintenance.
@@ -101,12 +102,12 @@ Stop requests (`should_stop_requested`, rule `sm_stop_decide`):
 Shutdown (also reached on a failed or interrupted startup step):
 
 1. Stop the automatic mount, then the compatible listener, the AMPR updater and the API service.
-2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service. As the lifecycle watcher stops it tears down the fakelib sandbox layers and NSFS backport redirects, except an overlay session whose game is still alive, still launching in its sandbox, or in a same-app handoff (`sm_shutdown_keeps_game_layers`): those are kept and each one is logged. An alias-only session is always torn down (non-forced), live game or not.
+2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service, then the session record writer (it writes the final state: no record when everything was removed, the kept layers otherwise). As the lifecycle watcher stops it tears down the fakelib sandbox layers and NSFS backport redirects, except an overlay session whose game is still alive, still launching in its sandbox, or in a same-app handoff (`sm_shutdown_keeps_game_layers`): those are kept and each one is logged. An alias-only session is always torn down (non-forced), live game or not.
 3. Shut down the scanner; stop diagnostics (it reads mdbg and app.db, so it goes before them); shut down mdbg.
 4. Release title layers, then image mounts. The `/system_ex/app/<TID>` stack of a kept overlay session is kept without an unmount attempt; a kept stack counts as remaining, so image teardown is skipped as for a busy stack. Only if both succeed is the kstuff no-automount sentinel removed.
 5. Shut down app.db access, remove the ownership ledger, close the log.
 
-Layers kept for a live game are not adopted by a later instance; see "Stopping with a game running" in [`unimount-ownership.md`](unimount-ownership.md).
+Layers kept for a live game stay in the session record; a later instance started while that game still runs can adopt them. See "Stopping with a game running" and "Session record and adoption" in [`unimount-ownership.md`](unimount-ownership.md).
 
 ## Paths and ports on the console
 
@@ -117,6 +118,7 @@ Layers kept for a live game are not adopted by a later instance; see "Stopping w
 | Config, profiles, manual list, log | `config.ini`, `profiles.ini`, `manual.lst`, `debug.log` (previous run: `debug.log.1`) |
 | Stop request file | `/data/shadowmount/STOP` |
 | Ownership ledger | `/data/shadowmount/owner.json` |
+| Sandbox session record | `/data/shadowmount/sandbox-session.json` |
 | Kraken caches | `/data/shadowmount/kraken/<TITLEID>` |
 | zstd-folder AMPR overlays | `/data/shadowmount/ampr-ng/<TITLEID>/fakelib` |
 | Emulator libraries, global fakelib | `/data/shadowmount/emus`, `/data/shadowmount/fakelib` |

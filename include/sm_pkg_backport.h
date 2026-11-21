@@ -7,6 +7,7 @@
 #include <sys/types.h>
 
 #include "sm_limits.h"
+#include "sm_unimount_logic.h"
 
 // Add child NSFS redirects immediately before the package process is spawned.
 // Files use plain redirects; missing directory subtrees use overlays. Up to
@@ -35,5 +36,14 @@ bool sm_pkg_backport_has_redirects(void);
 // Add the titles whose redirects a shutdown kept.
 void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
                                      size_t *count, size_t max);
+// Adoption (no lifecycle, hooks or service running): take over the redirect
+// sets of a verified session record.
+bool sm_pkg_backport_adopt_redirects(const sm_session_record_t *record);
+// One cleanup_session_locked() pass over every adopted set, as at game exit.
+// deadline_us: 0 on the first pass, the retry deadline afterwards.
+bool sm_pkg_backport_adopted_release(uint64_t deadline_us, size_t *remaining);
+// Forget the adopted sets without deleting their redirects (a same-app
+// replacement process keeps using them, as with the owner).
+void sm_pkg_backport_adopted_drop(void);
 
 #endif

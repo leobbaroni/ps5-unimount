@@ -53,5 +53,12 @@ void sm_fakelib_game_shutdown(const char *handoff_title_id);
 sm_session_kind_t sm_fakelib_game_session_kind(void);
 // After sm_fakelib_game_shutdown(): the title whose layers were kept.
 bool sm_fakelib_game_kept_title(char title_id[MAX_TITLE_ID]);
+// Adoption (no lifecycle, hooks or service running): take over the layers
+// of a verified session record as this instance's session.
+bool sm_fakelib_adopt_session(const sm_session_record_t *record);
+// One cleanup_fakelib_mount() pass over the adopted session, exactly as at
+// game exit. deadline_us: 0 on the first pass (busy mounts are diagnosed),
+// the retry deadline afterwards. *remaining: owned mounts still present.
+bool sm_fakelib_adopted_release(uint64_t deadline_us, size_t *remaining);
 
 #endif

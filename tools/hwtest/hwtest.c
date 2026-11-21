@@ -9,6 +9,8 @@
  *   kill              -> "ok" | "err rc=0x%08x" | "err none"
  *   browse http://... -> opens the console's web browser at that URL
  *   read /data/shadowmount/<file> -> the file's bytes (logs and state), or "err open"
+ *   sigkill <pid>     -> "ok" | "err <errno text>": sends SIGKILL to that pid
+ *                        (simulates PS5 Payload Manager's forced kill)
  *   quit              -> "ok bye" and the payload exits
  *
  * Launch/kill calls follow ps5-payload-dev/websrv (sys_launch_title), GPL-3.0.
@@ -16,6 +18,7 @@
  */
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -121,6 +124,21 @@ static int handle(int fd) {
           break;
       }
       fclose(fp);
+    }
+  } else if (strncmp(line, "sigkill ", 8) == 0) {
+    char *end = NULL;
+    errno = 0;
+    long pid = strtol(line + 8, &end, 10);
+    if (errno != 0 || end == line + 8 || *end != '\0' || pid <= 1 ||
+        pid > INT32_MAX) {
+      reply(fd, "err bad pid\n", 0);
+    } else if (kill((pid_t)pid, SIGKILL) != 0) {
+      char buf[96];
+      int n = snprintf(buf, sizeof(buf), "err %s\n", strerror(errno));
+      if (n > 0)
+        (void)write(fd, buf, (size_t)n);
+    } else {
+      reply(fd, "ok\n", 0);
     }
   } else if (strcmp(line, "quit") == 0) {
     reply(fd, "ok bye\n", 0);

@@ -14,6 +14,7 @@
 #include "sm_paths.h"
 #include "sm_pkg_backport.h"
 #include "sm_runtime.h"
+#include "sm_sandbox_record.h"
 #include "sm_scan.h"
 #include "sm_types.h"
 #include "sm_time.h"
@@ -48,6 +49,7 @@ typedef struct {
   bool created_mount_path;
   bool source_detached;
   bool owned_mount;
+  bool read_only;
   bool mount_identity_valid;
   fsid_t mount_fsid;
   // Identify the source volume, rather than its sandbox nullfs alias.
@@ -134,8 +136,103 @@ static sm_session_kind_t fakelib_session_kind_locked(void) {
   return sm_session_kind(kinds, count, false);
 }
 
+_Static_assert(sizeof(g_fakelib_mount.layers) /
+                       sizeof(g_fakelib_mount.layers[0]) <=
+                   SM_SESSION_MAX_LAYERS,
+               "session record cannot hold every sandbox layer");
+_Static_assert(sizeof(fsid_t) == 2u * sizeof(int32_t), "fsid layout");
+
+// Last snapshot handed to the session record (guarded by g_fakelib_mutex).
+static sm_record_fakelib_t g_record_snapshot;
+
+// Entries cleanup_fakelib_mount() acts on: owned mounts (unmount, then rmdir
+// of a created mount point) and created parent directories (rmdir only).
+// Mounts ShellCore made and this session only reused are left alone by the
+// owner and are not recorded.
+static bool record_layer_kept(const fakelib_layer_t *layer) {
+  return layer->source_path[0] ? layer->owned_mount
+                               : layer->created_mount_path;
+}
+
+static bool record_layer_current(const fakelib_layer_t *layer,
+                                 const sm_session_layer_t *recorded) {
+  if (!layer->source_path[0])
+    return sm_session_layer_is_parent(recorded) &&
+           strcmp(recorded->target, layer->mount_path) == 0;
+  return layer->mount_identity_valid &&
+         memcmp(recorded->fsid, &layer->mount_fsid, sizeof(recorded->fsid)) == 0 &&
+         recorded->read_only == layer->read_only &&
+         recorded->created == layer->created_mount_path &&
+         strcmp(recorded->label, layer->label) == 0 &&
+         strcmp(recorded->source, layer->source_path) == 0 &&
+         strcmp(recorded->target, layer->mount_path) == 0;
+}
+
+// Only memory is touched here; sm_sandbox_record.c writes the file elsewhere.
+static void publish_session_record_locked(void) {
+  sm_record_fakelib_t *snapshot = &g_record_snapshot;
+  size_t kept = 0;
+  bool current = true;
+  for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+    const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+    if (!record_layer_kept(layer))
+      continue;
+    current = current && kept < snapshot->layer_count &&
+              record_layer_current(layer, &snapshot->layers[kept]);
+    ++kept;
+  }
+  if (kept == 0 && snapshot->layer_count == 0)
+    return;
+  if (current && kept == snapshot->layer_count &&
+      snapshot->pid == g_fakelib_mount.pid &&
+      strcmp(snapshot->title_id, g_fakelib_mount.title_id) == 0 &&
+      strcmp(snapshot->sandbox_app0, g_fakelib_mount.sandbox_app0_path) == 0 &&
+      strcmp(snapshot->lib_mount, g_fakelib_mount.mount_path) == 0)
+    return;
+
+  memset(snapshot, 0, sizeof(*snapshot));
+  if (kept > 0) {
+    snapshot->pid = g_fakelib_mount.pid;
+    snapshot->complete = true;
+    (void)strlcpy(snapshot->title_id, g_fakelib_mount.title_id,
+                  sizeof(snapshot->title_id));
+    (void)strlcpy(snapshot->sandbox_app0, g_fakelib_mount.sandbox_app0_path,
+                  sizeof(snapshot->sandbox_app0));
+    (void)strlcpy(snapshot->lib_mount, g_fakelib_mount.mount_path,
+                  sizeof(snapshot->lib_mount));
+  }
+  for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+    const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+    if (!record_layer_kept(layer))
+      continue;
+    sm_session_layer_t *recorded = &snapshot->layers[snapshot->layer_count++];
+    (void)strlcpy(recorded->target, layer->mount_path, sizeof(recorded->target));
+    if (!layer->source_path[0]) {
+      (void)strlcpy(recorded->label, SM_SESSION_PARENT_LABEL,
+                    sizeof(recorded->label));
+      (void)strlcpy(recorded->fstype, SM_SESSION_PARENT_FSTYPE,
+                    sizeof(recorded->fstype));
+      recorded->created = true;
+      continue;
+    }
+    (void)strlcpy(recorded->label, layer->label, sizeof(recorded->label));
+    (void)strlcpy(recorded->fstype,
+                  strcmp(layer->label, "directory") == 0 ? "nullfs" : "unionfs",
+                  sizeof(recorded->fstype));
+    (void)strlcpy(recorded->source, layer->source_path, sizeof(recorded->source));
+    if (layer->mount_identity_valid)
+      memcpy(recorded->fsid, &layer->mount_fsid, sizeof(recorded->fsid));
+    else
+      snapshot->complete = false;
+    recorded->read_only = layer->read_only;
+    recorded->created = layer->created_mount_path;
+  }
+  sm_session_record_publish_fakelib(snapshot);
+}
+
 static void unlock_fakelib_session(void) {
   atomic_store(&g_fakelib_session_kind, (int)fakelib_session_kind_locked());
+  publish_session_record_locked();
   pthread_mutex_unlock(&g_fakelib_mutex);
 }
 
@@ -394,6 +491,7 @@ static bool track_sandbox_layer(const char *title_id,
       &g_fakelib_mount.layers[g_fakelib_mount.layer_count++];
   memset(layer, 0, sizeof(*layer));
   layer->owned_mount = owned;
+  layer->read_only = (flags & MNT_RDONLY) != 0;
   layer->label = label;
   (void)strlcpy(layer->source_path, source_path, sizeof(layer->source_path));
   (void)strlcpy(layer->mount_path, mount_path, sizeof(layer->mount_path));
@@ -2852,4 +2950,85 @@ bool sm_fakelib_game_kept_title(char title_id[MAX_TITLE_ID]) {
   (void)strlcpy(title_id, g_fakelib_kept_title_id, MAX_TITLE_ID);
   unlock_fakelib_session();
   return title_id[0] != '\0';
+}
+
+static const char *adopted_layer_label(const char *label) {
+  static const char *const labels[] = {"game", "global", "fakelib2",
+                                       "directory"};
+  for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i)
+    if (strcmp(label, labels[i]) == 0)
+      return labels[i];
+  return NULL;
+}
+
+bool sm_fakelib_adopt_session(const sm_session_record_t *record) {
+  const size_t capacity =
+      sizeof(g_fakelib_mount.layers) / sizeof(g_fakelib_mount.layers[0]);
+  if (!record || record->layer_count > capacity) {
+    errno = EINVAL;
+    return false;
+  }
+  for (size_t i = 0; i < record->layer_count; ++i) {
+    if (!sm_session_layer_is_parent(&record->layers[i]) &&
+        !adopted_layer_label(record->layers[i].label)) {
+      errno = EINVAL;
+      return false;
+    }
+  }
+  pthread_mutex_lock(&g_fakelib_mutex);
+  if (fakelib_session_active()) {
+    unlock_fakelib_session();
+    errno = EBUSY;
+    return false;
+  }
+  memset(&g_fakelib_mount, 0, sizeof(g_fakelib_mount));
+  g_fakelib_mount.pid = (pid_t)record->game_pid;
+  (void)strlcpy(g_fakelib_mount.title_id, record->title_id,
+                sizeof(g_fakelib_mount.title_id));
+  (void)strlcpy(g_fakelib_mount.sandbox_app0_path, record->sandbox_app0,
+                sizeof(g_fakelib_mount.sandbox_app0_path));
+  (void)strlcpy(g_fakelib_mount.mount_path, record->lib_mount,
+                sizeof(g_fakelib_mount.mount_path));
+  for (size_t i = 0; i < record->layer_count; ++i) {
+    const sm_session_layer_t *recorded = &record->layers[i];
+    fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+    if (sm_session_layer_is_parent(recorded)) {
+      // As ensure_sandbox_parent() leaves it: no source, no mount, rmdir only.
+      (void)strlcpy(layer->mount_path, recorded->target,
+                    sizeof(layer->mount_path));
+      layer->created_mount_path = true;
+      continue;
+    }
+    layer->label = adopted_layer_label(recorded->label);
+    (void)strlcpy(layer->source_path, recorded->source,
+                  sizeof(layer->source_path));
+    (void)strlcpy(layer->mount_path, recorded->target,
+                  sizeof(layer->mount_path));
+    layer->owned_mount = true;
+    layer->read_only = recorded->read_only;
+    layer->created_mount_path = recorded->created;
+    layer->mount_identity_valid = true;
+    memcpy(&layer->mount_fsid, recorded->fsid, sizeof(layer->mount_fsid));
+  }
+  g_fakelib_mount.layer_count = record->layer_count;
+  g_fakelib_mount.mounts_ready = record->layer_count > 0;
+  unlock_fakelib_session();
+  return true;
+}
+
+bool sm_fakelib_adopted_release(uint64_t deadline_us, size_t *remaining) {
+  pthread_mutex_lock(&g_fakelib_mutex);
+  g_fakelib_mount.cleanup_deadline_us = deadline_us;
+  bool released = cleanup_fakelib_mount();
+  int cleanup_errno = errno;
+  size_t left = 0;
+  for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i)
+    if (g_fakelib_mount.layers[i].source_path[0] &&
+        g_fakelib_mount.layers[i].owned_mount)
+      ++left;
+  unlock_fakelib_session();
+  if (remaining)
+    *remaining = left;
+  errno = cleanup_errno;
+  return released;
 }

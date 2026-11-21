@@ -12,6 +12,7 @@
 #include "sm_pkg_backport.h"
 #include "sm_scan.h"
 #include "sm_runtime.h"
+#include "sm_sandbox_record.h"
 #include "sm_time.h"
 #include "sm_unimount_logic.h"
 
@@ -85,11 +86,97 @@ static pkg_backport_session_t
 // mutex may be held by its own caller.
 static atomic_uint g_pkg_backport_installed = 0;
 
+_Static_assert(PKG_BACKPORT_MAX_SESSIONS <= SM_SESSION_MAX_REDIRECT_SETS &&
+                   PKG_BACKPORT_MAX_REDIRECTS <= SM_SESSION_MAX_REDIRECTS,
+               "session record cannot hold every redirect");
+_Static_assert(sizeof(fsid_t) == 2u * sizeof(int32_t), "fsid layout");
+
+static const char *redirect_destination(
+    const pkg_backport_session_t *session,
+    const pkg_backport_redirect_t *redirect);
+
+// Last snapshot handed to the session record (guarded by
+// g_pkg_backport_mutex), with the live redirect count of each set.
+static sm_record_redirect_set_t g_record_sets[PKG_BACKPORT_MAX_SESSIONS];
+static size_t g_record_live[PKG_BACKPORT_MAX_SESSIONS];
+static size_t g_record_set_count;
+
+static size_t live_redirect_count(const pkg_backport_session_t *session) {
+  size_t count = 0;
+  for (size_t i = 0; i < session->redirect_count; ++i)
+    if (redirect_destination(session, &session->redirects[i]))
+      ++count;
+  return count;
+}
+
+static bool record_set_current(const pkg_backport_session_t *session,
+                               const sm_record_redirect_set_t *recorded,
+                               size_t recorded_live) {
+  return recorded->pid == session->pid &&
+         recorded->redirects.device == (uint64_t)session->namespace_id.device &&
+         memcmp(recorded->redirects.fsid, &session->namespace_id.fsid,
+                sizeof(recorded->redirects.fsid)) == 0 &&
+         recorded_live == live_redirect_count(session) &&
+         strcmp(recorded->title_id, session->title_id) == 0 &&
+         strcmp(recorded->redirects.source, session->root_source) == 0 &&
+         strcmp(recorded->redirects.target, session->root_destination) == 0;
+}
+
+// Installed redirect sets are what cleanup_session_locked() deletes at game
+// exit. Only memory is touched here; sm_sandbox_record.c writes the file.
+static void publish_session_record_locked(void) {
+  size_t installed = 0;
+  bool current = true;
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
+    const pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    if (!session->installed)
+      continue;
+    current = current && installed < g_record_set_count &&
+              record_set_current(session, &g_record_sets[installed],
+                                 g_record_live[installed]);
+    ++installed;
+  }
+  if (current && installed == g_record_set_count)
+    return;
+
+  memset(g_record_sets, 0, sizeof(g_record_sets));
+  memset(g_record_live, 0, sizeof(g_record_live));
+  g_record_set_count = 0;
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
+    const pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    if (!session->installed)
+      continue;
+    sm_record_redirect_set_t *recorded = &g_record_sets[g_record_set_count];
+    recorded->pid = session->pid;
+    recorded->complete = true;
+    (void)strlcpy(recorded->title_id, session->title_id,
+                  sizeof(recorded->title_id));
+    (void)strlcpy(recorded->redirects.source, session->root_source,
+                  sizeof(recorded->redirects.source));
+    (void)strlcpy(recorded->redirects.target, session->root_destination,
+                  sizeof(recorded->redirects.target));
+    recorded->redirects.device = (uint64_t)session->namespace_id.device;
+    memcpy(recorded->redirects.fsid, &session->namespace_id.fsid,
+           sizeof(recorded->redirects.fsid));
+    for (size_t j = 0; j < session->redirect_count; ++j) {
+      const char *destination =
+          redirect_destination(session, &session->redirects[j]);
+      if (!destination)
+        continue;
+      if (!sm_session_redirects_add(&recorded->redirects, destination))
+        recorded->complete = false;
+    }
+    g_record_live[g_record_set_count++] = live_redirect_count(session);
+  }
+  sm_session_record_publish_redirects(g_record_sets, g_record_set_count);
+}
+
 static void unlock_pkg_backport_sessions(void) {
   unsigned installed = 0;
   for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i)
     installed += g_pkg_backport_sessions[i].installed ? 1u : 0u;
   atomic_store(&g_pkg_backport_installed, installed);
+  publish_session_record_locked();
   pthread_mutex_unlock(&g_pkg_backport_mutex);
 }
 
@@ -805,6 +892,101 @@ void sm_pkg_backport_shutdown(const char *handoff_title_id) {
     session->cleanup_next_us = 0;
     session->cleanup_deadline_us = 0;
   }
+  unlock_pkg_backport_sessions();
+}
+
+bool sm_pkg_backport_adopt_redirects(const sm_session_record_t *record) {
+  if (!record || record->redirect_count > PKG_BACKPORT_MAX_SESSIONS) {
+    errno = EINVAL;
+    return false;
+  }
+  pthread_mutex_lock(&g_pkg_backport_mutex);
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
+    if (g_pkg_backport_sessions[i].installed) {
+      unlock_pkg_backport_sessions();
+      errno = EBUSY;
+      return false;
+    }
+  }
+  int load_errno = 0;
+  for (size_t i = 0; i < record->redirect_count && load_errno == 0; ++i) {
+    const sm_session_redirects_t *set = &record->redirects[i];
+    pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    reset_session_locked(session);
+    session->pid = (pid_t)record->game_pid;
+    (void)strlcpy(session->title_id, record->title_id,
+                  sizeof(session->title_id));
+    (void)strlcpy(session->root_source, set->source,
+                  sizeof(session->root_source));
+    (void)strlcpy(session->root_destination, set->target,
+                  sizeof(session->root_destination));
+    session->namespace_id.device = (dev_t)set->device;
+    memcpy(&session->namespace_id.fsid, set->fsid,
+           sizeof(session->namespace_id.fsid));
+    size_t offset = 0;
+    for (size_t j = 0; j < set->count; ++j) {
+      if (offset >= set->bytes || set->bytes > sizeof(set->storage)) {
+        load_errno = EINVAL;
+        break;
+      }
+      const char *destination = set->storage + offset;
+      size_t length = strnlen(destination, set->bytes - offset) + 1u;
+      if (length > set->bytes - offset ||
+          session->redirect_count >= PKG_BACKPORT_MAX_REDIRECTS) {
+        load_errno = EINVAL;
+        break;
+      }
+      size_t needed = session->destination_storage_size + length;
+      if (!reserve_destination_storage(session, needed)) {
+        load_errno = ENOMEM;
+        break;
+      }
+      memcpy(session->destination_storage + session->destination_storage_size,
+             destination, length);
+      session->redirects[session->redirect_count++].destination_offset =
+          (uint32_t)session->destination_storage_size;
+      session->destination_storage_size = needed;
+      offset += length;
+    }
+    session->installed = load_errno == 0;
+    session->ready = load_errno == 0;
+  }
+  if (load_errno != 0) {
+    for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i)
+      reset_session_locked(&g_pkg_backport_sessions[i]);
+  }
+  unlock_pkg_backport_sessions();
+  errno = load_errno;
+  return load_errno == 0;
+}
+
+bool sm_pkg_backport_adopted_release(uint64_t deadline_us, size_t *remaining) {
+  int release_errno = 0;
+  size_t left = 0;
+  pthread_mutex_lock(&g_pkg_backport_mutex);
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
+    pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    if (!session->installed)
+      continue;
+    session->cleanup_deadline_us = deadline_us;
+    if (!cleanup_session_locked(session, "adopted game exit")) {
+      int error = errno != 0 ? errno : EIO;
+      if (release_errno == 0 || release_errno == EBUSY)
+        release_errno = error;
+      ++left;
+    }
+  }
+  unlock_pkg_backport_sessions();
+  if (remaining)
+    *remaining = left;
+  errno = release_errno;
+  return left == 0;
+}
+
+void sm_pkg_backport_adopted_drop(void) {
+  pthread_mutex_lock(&g_pkg_backport_mutex);
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i)
+    reset_session_locked(&g_pkg_backport_sessions[i]);
   unlock_pkg_backport_sessions();
 }
 

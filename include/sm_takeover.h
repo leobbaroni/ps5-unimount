@@ -2,6 +2,7 @@
 #define SM_TAKEOVER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct json_object;
 
@@ -24,6 +25,8 @@ bool sm_takeover_kraken_adoptable(const char *title_id, bool *busy_out);
 void sm_ownership_begin(void);
 // Remove the ledger on clean shutdown.
 void sm_ownership_end(void);
+// kern.boottime in seconds (0 when unavailable), as stored in the ledger.
+int64_t sm_ownership_boot_time(void);
 // Add the GET /api/v1/ownership fields to a response object.
 bool sm_ownership_add_json(struct json_object *response);
 

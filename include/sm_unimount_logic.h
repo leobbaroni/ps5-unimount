@@ -177,6 +177,114 @@ bool sm_owner_ledger_format(char *out, size_t out_size, const char *product,
 bool sm_owner_ledger_parse(const char *body, size_t len, long *pid_out,
                            int64_t *boot_time_out);
 
+// --- Sandbox session record (/data/shadowmount/sandbox-session.json) ---
+//
+// The owning instance records every sandbox mount and NSFS redirect set it
+// removes at game exit, so that a later instance can remove them after the
+// owner was killed ("adoption").
+
+#define SM_SESSION_RECORD_FORMAT 1
+#define SM_SESSION_RECORD_MAX_BYTES (512u * 1024u)
+#define SM_SESSION_MAX_LAYERS 24u
+#define SM_SESSION_MAX_REDIRECT_SETS 2u
+#define SM_SESSION_MAX_REDIRECTS 256u
+#define SM_SESSION_REDIRECT_BYTES (64u * 1024u)
+
+// A directory the owner created only as a parent of mount points (no mount;
+// cleanup removes it with rmdir after its children).
+#define SM_SESSION_PARENT_LABEL "parent"
+#define SM_SESSION_PARENT_FSTYPE "none"
+
+typedef struct {
+  char label[16];         // game, global, fakelib2 (unionfs), directory
+                          // (nullfs) or parent (no mount, empty source)
+  char fstype[16];        // unionfs, nullfs or none
+  char source[MAX_PATH];
+  char target[MAX_PATH];  // mount path inside the sandbox
+  int32_t fsid[2];        // f_fsid of the mount, both words
+  bool read_only;
+  bool created;           // the owner created the mount directory
+} sm_session_layer_t;
+
+typedef struct {
+  char source[MAX_PATH];  // backport root
+  char target[MAX_PATH];  // the sandbox's NSFS app0
+  uint64_t device;        // st_dev of that app0
+  int32_t fsid[2];        // f_fsid of that NSFS mount
+  size_t count;           // destinations, in creation order
+  size_t bytes;           // used bytes of storage (NUL-terminated strings)
+  char storage[SM_SESSION_REDIRECT_BYTES];
+} sm_session_redirects_t;
+
+typedef struct {
+  int64_t boot_time;       // kern.boottime seconds, as in owner.json
+  int64_t owner_pid;
+  int64_t game_pid;        // 0 before the game process is known
+  uint32_t app_id;         // AppInfo app_id of game_pid, 0 when unknown
+  bool complete;           // false: a layer could not be identified
+  char title_id[MAX_TITLE_ID];
+  char sandbox_app0[MAX_PATH];
+  char lib_mount[MAX_PATH];  // the fakelib common/lib mount path
+  size_t layer_count;      // in creation order
+  sm_session_layer_t layers[SM_SESSION_MAX_LAYERS];
+  size_t redirect_count;
+  sm_session_redirects_t redirects[SM_SESSION_MAX_REDIRECT_SETS];
+} sm_session_record_t;
+
+// Appends one destination; false when it does not fit (the set is then
+// unchanged).
+bool sm_session_redirects_add(sm_session_redirects_t *set,
+                              const char *destination);
+
+// JSON text of the record; *out is malloc'd. version is informational.
+bool sm_session_record_format(const sm_session_record_t *record,
+                              const char *version, char **out);
+// Strict parse. *why receives a static reason when it fails.
+bool sm_session_record_parse(const char *body, size_t length,
+                             sm_session_record_t *out, const char **why);
+
+bool sm_session_layer_is_parent(const sm_session_layer_t *layer);
+// Mounts plus one per NSFS redirect set (the count in [ADOPT] lines);
+// parent directories are not counted.
+size_t sm_session_record_units(const sm_session_record_t *record);
+// No layer entry (mount or parent directory) and no redirect set.
+bool sm_session_record_empty(const sm_session_record_t *record);
+sm_session_kind_t sm_session_record_kind(const sm_session_record_t *record);
+
+typedef struct {
+  const char *fstype;
+  const char *from;
+  const char *on;
+  int32_t fsid[2];
+  size_t from_size;  // capacity of the from field (MNAMELEN); 0: unlimited
+} sm_mount_entry_t;
+
+typedef struct {
+  int64_t boot_time;         // this boot
+  bool game_alive;           // the record's game pid exists
+  uint32_t game_app_id;      // AppInfo of that pid (0 unknown)
+  char game_title_id[MAX_TITLE_ID];
+  uint32_t running_app_id;   // the running big app (0 none)
+  char running_title_id[MAX_TITLE_ID];  // "" when unknown
+  const sm_mount_entry_t *mounts;  // live mount table, in mount order
+  size_t mount_count;
+} sm_adopt_live_t;
+
+// Every recorded mount must be mounted with the same type, source, path and
+// filesystem id, and be the topmost mount on its path (parent directories
+// need no mount); every redirect set's
+// NSFS app0 must be mounted with the same id. NULL when all match, else a
+// reason written to buf.
+const char *sm_session_record_match(const sm_session_record_t *record,
+                                    const sm_mount_entry_t *mounts,
+                                    size_t count, char *buf, size_t size);
+
+// All checks for adopting a record; true to adopt. On false, *reason
+// (written to buf or static) says why.
+bool sm_session_adopt_decide(const sm_session_record_t *record,
+                             const sm_adopt_live_t *live, char *buf,
+                             size_t size, const char **reason);
+
 // --- Kraken-compatible HTTP listener ---
 
 typedef struct {

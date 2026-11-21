@@ -1,6 +1,7 @@
 // Host regression test for the UniMount decision helpers in
 // src/sm_unimount_logic.c: Kraken takeover, the compatible listener,
-// automatic PKG mounting, adoption and AMPR-emu-NG selection.
+// automatic PKG mounting, adoption, the sandbox session record and its
+// adoption checks, and AMPR-emu-NG selection.
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
@@ -582,7 +583,486 @@ static void test_kept_layers(void) {
   assert(!sm_title_list_contains(view, count, NULL));
 }
 
+// --- Session record and adoption ---
+
+#define SANDBOX "/mnt/sandbox/PPSA01234_000"
+
+static void add_layer(sm_session_record_t *record, const char *label,
+                      const char *source, const char *target, int32_t id,
+                      bool read_only) {
+  sm_session_layer_t *layer = &record->layers[record->layer_count++];
+  snprintf(layer->label, sizeof(layer->label), "%s", label);
+  snprintf(layer->fstype, sizeof(layer->fstype), "%s",
+           strcmp(label, "directory") == 0 ? "nullfs" : "unionfs");
+  snprintf(layer->source, sizeof(layer->source), "%s", source);
+  snprintf(layer->target, sizeof(layer->target), "%s", target);
+  layer->fsid[0] = id;
+  layer->fsid[1] = 7;
+  layer->read_only = read_only;
+  layer->created = strcmp(label, "directory") == 0;
+}
+
+static void add_parent(sm_session_record_t *record, const char *target) {
+  sm_session_layer_t *layer = &record->layers[record->layer_count++];
+  snprintf(layer->label, sizeof(layer->label), SM_SESSION_PARENT_LABEL);
+  snprintf(layer->fstype, sizeof(layer->fstype), SM_SESSION_PARENT_FSTYPE);
+  snprintf(layer->target, sizeof(layer->target), "%s", target);
+  layer->created = true;
+}
+
+// A debug-.pkg session: fakelib2 overlay, /data alias, app0 cover,
+// app0/kraken, the font alias with its two created parent directories,
+// plus one NSFS redirect set.
+static sm_session_record_t *sample_record(void) {
+  sm_session_record_t *record = calloc(1, sizeof(*record));
+  assert(record);
+  record->boot_time = 1700000000;
+  record->owner_pid = 500;
+  record->game_pid = 600;
+  record->app_id = 0x60000123u;
+  record->complete = true;
+  snprintf(record->title_id, sizeof(record->title_id), "PPSA01234");
+  snprintf(record->sandbox_app0, sizeof(record->sandbox_app0), SANDBOX "/app0");
+  snprintf(record->lib_mount, sizeof(record->lib_mount), SANDBOX "/common/lib");
+  add_layer(record, "fakelib2", "/data/shadowmount/kraken/PPSA01234/fakelib",
+            SANDBOX "/common/lib", 101, false);
+  add_layer(record, "directory", "/data", SANDBOX "/data", 102, false);
+  add_layer(record, "directory", "/system_ex/app/PPSA01234", SANDBOX "/app0",
+            103, false);
+  add_layer(record, "directory", "/mnt/usb0/games", SANDBOX "/app0/kraken", 104,
+            true);
+  add_parent(record, SANDBOX "/preinst");
+  add_parent(record, SANDBOX "/preinst/common");
+  add_layer(record, "directory", "/preinst/common/font",
+            SANDBOX "/preinst/common/font", 106, true);
+  sm_session_redirects_t *set = &record->redirects[record->redirect_count++];
+  snprintf(set->source, sizeof(set->source), "/data/homebrew/backports/PPSA01234");
+  snprintf(set->target, sizeof(set->target), SANDBOX "/app0");
+  set->device = 77;
+  set->fsid[0] = 200;
+  set->fsid[1] = 3;
+  assert(sm_session_redirects_add(set, SANDBOX "/app0/sce_module/libc.prx"));
+  assert(sm_session_redirects_add(set, SANDBOX "/app0/sce_module/extra"));
+  return record;
+}
+
+#define MOUNT(type, src, dst, id0, id1) \
+  {.fstype = type, .from = src, .on = dst, .fsid = {id0, id1}, .from_size = 0}
+
+static sm_mount_entry_t g_mounts[16];
+static size_t g_mount_count;
+
+static void sample_mounts(void) {
+  const sm_mount_entry_t mounts[] = {
+      MOUNT("ufs", "/dev/ssd0.user", "/user", 1, 1),
+      MOUNT("nullfs", "/user/data", "/data", 2, 1),
+      MOUNT("nsfs", "nsfs", SANDBOX "/app0", 200, 3),
+      MOUNT("nullfs", "/system/common/lib", SANDBOX "/common/lib", 3, 1),
+      MOUNT("unionfs", "<above>:/data/shadowmount/kraken/PPSA01234/fakelib",
+            SANDBOX "/common/lib", 101, 7),
+      MOUNT("nullfs", "/data", SANDBOX "/data", 102, 7),
+      MOUNT("nullfs", "/system_ex/app/PPSA01234", SANDBOX "/app0", 103, 7),
+      MOUNT("nullfs", "/mnt/usb0/games", SANDBOX "/app0/kraken", 104, 7),
+      MOUNT("exfatfs", "/dev/da0s1", "/mnt/usb0", 5, 1),
+      MOUNT("nullfs", "/preinst/common/font", SANDBOX "/preinst/common/font",
+            106, 7),
+  };
+  memcpy(g_mounts, mounts, sizeof(mounts));
+  g_mount_count = sizeof(mounts) / sizeof(mounts[0]);
+}
+
+static sm_adopt_live_t sample_live(void) {
+  sm_adopt_live_t live = {.boot_time = 1700000000,
+                          .game_alive = true,
+                          .game_app_id = 0x60000123u,
+                          .running_app_id = 0x60000123u,
+                          .mounts = g_mounts,
+                          .mount_count = g_mount_count};
+  snprintf(live.game_title_id, sizeof(live.game_title_id), "PPSA01234");
+  snprintf(live.running_title_id, sizeof(live.running_title_id), "PPSA01234");
+  return live;
+}
+
+static const char *refusal(const sm_session_record_t *record,
+                           const sm_adopt_live_t *live) {
+  static char buf[MAX_PATH + 128];
+  const char *reason = NULL;
+  bool adopt = sm_session_adopt_decide(record, live, buf, sizeof(buf), &reason);
+  assert(adopt == (reason == NULL));
+  return reason;
+}
+
+static void test_session_record_format(void) {
+  sm_session_record_t *record = sample_record();
+  sm_session_record_t *parsed = calloc(1, sizeof(*parsed));
+  assert(parsed);
+  char *text = NULL;
+  const char *why = NULL;
+  assert(sm_session_record_format(record, "0.1.0", &text));
+  assert(strstr(text, "\"format\":1") && strstr(text, "\"title_id\":\"PPSA01234\""));
+  assert(sm_session_record_parse(text, strlen(text), parsed, &why) && !why);
+  assert(parsed->boot_time == record->boot_time &&
+         parsed->owner_pid == 500 && parsed->game_pid == 600 &&
+         parsed->app_id == 0x60000123u && parsed->complete);
+  assert(strcmp(parsed->lib_mount, record->lib_mount) == 0 &&
+         strcmp(parsed->sandbox_app0, record->sandbox_app0) == 0);
+  // Every entry, parent directories included, in the original order.
+  assert(parsed->layer_count == 7 && parsed->redirect_count == 1);
+  assert(sm_session_layer_is_parent(&parsed->layers[4]) &&
+         sm_session_layer_is_parent(&parsed->layers[5]) &&
+         !sm_session_layer_is_parent(&parsed->layers[6]) &&
+         strcmp(parsed->layers[4].target, SANDBOX "/preinst") == 0 &&
+         strcmp(parsed->layers[5].target, SANDBOX "/preinst/common") == 0 &&
+         parsed->layers[4].source[0] == 0 && parsed->layers[4].created &&
+         strcmp(parsed->layers[4].fstype, SM_SESSION_PARENT_FSTYPE) == 0);
+  for (size_t i = 0; i < record->layer_count; ++i) {
+    const sm_session_layer_t *a = &record->layers[i], *b = &parsed->layers[i];
+    assert(strcmp(a->label, b->label) == 0 && strcmp(a->fstype, b->fstype) == 0 &&
+           strcmp(a->source, b->source) == 0 && strcmp(a->target, b->target) == 0 &&
+           a->fsid[0] == b->fsid[0] && a->fsid[1] == b->fsid[1] &&
+           a->read_only == b->read_only && a->created == b->created);
+  }
+  const sm_session_redirects_t *set = &parsed->redirects[0];
+  assert(set->device == 77 && set->fsid[0] == 200 && set->fsid[1] == 3 &&
+         set->count == 2 && set->bytes == record->redirects[0].bytes &&
+         memcmp(set->storage, record->redirects[0].storage, set->bytes) == 0);
+  assert(sm_session_record_units(parsed) == 6);  // parents not counted
+  assert(sm_session_record_kind(parsed) == SM_SESSION_OVERLAY);
+
+  // Negative fsid words and a large device survive the round trip.
+  record->layers[0].fsid[0] = INT32_MIN;
+  record->redirects[0].device = UINT64_C(0xFFFFFFFF00000001);
+  free(text);
+  assert(sm_session_record_format(record, "0.1.0", &text));
+  assert(sm_session_record_parse(text, strlen(text), parsed, &why));
+  assert(parsed->layers[0].fsid[0] == INT32_MIN &&
+         parsed->redirects[0].device == UINT64_C(0xFFFFFFFF00000001));
+
+  // Truncated or malformed JSON.
+  for (size_t cut = 0; cut < strlen(text); cut += 37)
+    assert(!sm_session_record_parse(text, cut, parsed, &why) && why);
+  assert(!sm_session_record_parse(NULL, 0, parsed, &why));
+  assert(!sm_session_record_parse("garbage", 7, parsed, &why) &&
+         strstr(why, "malformed"));
+  assert(!sm_session_record_parse("[]", 2, parsed, &why));
+  assert(!sm_session_record_parse("{}", 2, parsed, &why));
+  size_t length = strlen(text);
+  char *trailing = malloc(length + 3);
+  assert(trailing);
+  memcpy(trailing, text, length);
+  memcpy(trailing + length, " x", 3);
+  assert(!sm_session_record_parse(trailing, length + 2, parsed, &why));
+  memcpy(trailing + length, " \n", 3);
+  assert(sm_session_record_parse(trailing, length + 2, parsed, &why));
+  free(trailing);
+
+  // A record from another format version is not read.
+  char *other = strdup(text);
+  assert(other);
+  char *format = strstr(other, "\"format\":1");
+  format[9] = '2';
+  assert(!sm_session_record_parse(other, strlen(other), parsed, &why) &&
+         strstr(why, "format"));
+  free(other);
+
+  // Wrong types, unknown label, fstype that does not fit the label.
+  static const char *const replacements[][2] = {
+      {"\"game_pid\":600", "\"game_pid\":\"600\""},
+      {"\"complete\":true", "\"complete\":1"},
+      {"\"label\":\"fakelib2\"", "\"label\":\"other\""},
+      {"\"fstype\":\"unionfs\"", "\"fstype\":\"nullfs\""},
+      {"\"fsid\":[101,7]", "\"fsid\":[101]"},
+      {"\"fsid\":[101,7]", "\"fsid\":[4294967296,7]"},
+      {"\"title_id\":\"PPSA01234\"", "\"title_id\":\"PPSA0123\""},
+      {"\"target\":\"" SANDBOX "/data\"", "\"target\":\"/data\""},
+      {"\"target\":\"" SANDBOX "/data\"",
+       "\"target\":\"/mnt/sandbox/PPSA99999_000/data\""},
+      // Parent directories: inside the sandbox, no source, created.
+      {"\"target\":\"" SANDBOX "/preinst\"", "\"target\":\"/preinst\""},
+      {"\"source\":\"\",\"target\":\"" SANDBOX "/preinst\"",
+       "\"source\":\"/preinst\",\"target\":\"" SANDBOX "/preinst\""},
+      {"\"label\":\"parent\",\"fstype\":\"none\"",
+       "\"label\":\"parent\",\"fstype\":\"nullfs\""},
+      {"\"fstype\":\"nullfs\",\"source\":\"/data\"",
+       "\"fstype\":\"nullfs\",\"source\":\"\""},
+  };
+  record->layers[0].fsid[0] = 101;
+  record->redirects[0].device = 77;
+  free(text);
+  assert(sm_session_record_format(record, "0.1.0", &text));
+  for (size_t i = 0; i < sizeof(replacements) / sizeof(replacements[0]); ++i) {
+    const char *at = strstr(text, replacements[i][0]);
+    assert(at);
+    char edited[16384];
+    snprintf(edited, sizeof(edited), "%.*s%s%s", (int)(at - text), text,
+             replacements[i][1], at + strlen(replacements[i][0]));
+    assert(!sm_session_record_parse(edited, strlen(edited), parsed, &why) && why);
+  }
+
+  // Over-long strings.
+  char *long_text = malloc(strlen(text) + 2 * MAX_PATH);
+  assert(long_text);
+  char long_path[MAX_PATH + 8];
+  memset(long_path, 'a', sizeof(long_path) - 1);
+  long_path[0] = '/';
+  long_path[sizeof(long_path) - 1] = '\0';
+  const char *source = strstr(text, "\"source\":\"/data\"");
+  assert(source);
+  sprintf(long_text, "%.*s\"source\":\"%s\"%s", (int)(source - text), text,
+          long_path, source + strlen("\"source\":\"/data\""));
+  assert(!sm_session_record_parse(long_text, strlen(long_text), parsed, &why) &&
+         strstr(why, "over-long"));
+  const char *destination = strstr(text, "\"destinations\":[\"");
+  assert(destination);
+  sprintf(long_text, "%.*s\"destinations\":[\"%s\",%s", (int)(destination - text),
+          text, long_path, destination + strlen("\"destinations\":["));
+  assert(!sm_session_record_parse(long_text, strlen(long_text), parsed, &why) &&
+         strstr(why, "over-long"));
+  free(long_text);
+  free(text);
+
+  // Too many layers, redirect sets and redirects.
+  sm_session_record_t *big = sample_record();
+  big->layer_count = 0;
+  for (size_t i = 0; i < SM_SESSION_MAX_LAYERS; ++i) {
+    char target[64];
+    snprintf(target, sizeof(target), SANDBOX "/mnt/usb%zu", i);
+    add_layer(big, "directory", "/mnt/usb0", target, (int32_t)(300 + i), false);
+  }
+  assert(sm_session_record_format(big, "0.1.0", &text));
+  assert(sm_session_record_parse(text, strlen(text), parsed, &why));
+  const char *layers = strstr(text, "\"layers\":[");
+  assert(layers);
+  layers += strlen("\"layers\":[");
+  const char *first_end = strstr(layers, "},");
+  assert(first_end);
+  size_t first_len = (size_t)(first_end - layers) + 2u;
+  char *more = malloc(strlen(text) + first_len + 1);
+  assert(more);
+  sprintf(more, "%.*s%.*s%s", (int)(layers - text), text, (int)first_len, layers,
+          layers);
+  assert(!sm_session_record_parse(more, strlen(more), parsed, &why) &&
+         strstr(why, "too many layers"));
+  free(more);
+  free(text);
+
+  big->layer_count = 1;
+  big->redirect_count = 2;
+  big->redirects[1] = big->redirects[0];
+  assert(sm_session_record_format(big, "0.1.0", &text));
+  assert(sm_session_record_parse(text, strlen(text), parsed, &why));
+  const char *sets = strstr(text, "\"redirects\":[");
+  assert(sets);
+  sets += strlen("\"redirects\":[");
+  size_t set_len = strlen(sets) - 2u;  // without the closing "]}"
+  more = malloc(strlen(text) + set_len + 2);
+  assert(more);
+  sprintf(more, "%.*s%.*s,%s", (int)(sets - text), text, (int)set_len, sets, sets);
+  assert(!sm_session_record_parse(more, strlen(more), parsed, &why) &&
+         strstr(why, "too many redirect sets"));
+  free(more);
+  free(text);
+
+  big->redirect_count = 1;
+  memset(&big->redirects[0].storage, 0, sizeof(big->redirects[0].storage));
+  big->redirects[0].count = big->redirects[0].bytes = 0;
+  for (size_t i = 0; i < SM_SESSION_MAX_REDIRECTS; ++i) {
+    char path[64];
+    snprintf(path, sizeof(path), SANDBOX "/app0/f%zu", i);
+    assert(sm_session_redirects_add(&big->redirects[0], path));
+  }
+  assert(!sm_session_redirects_add(&big->redirects[0], SANDBOX "/app0/x"));
+  assert(sm_session_record_format(big, "0.1.0", &text));
+  assert(sm_session_record_parse(text, strlen(text), parsed, &why));
+  const char *list = strstr(text, "\"destinations\":[");
+  assert(list);
+  list += strlen("\"destinations\":[");
+  more = malloc(strlen(text) + 64);
+  assert(more);
+  sprintf(more, "%.*s\"" SANDBOX "/app0/extra\",%s", (int)(list - text), text,
+          list);
+  assert(!sm_session_record_parse(more, strlen(more), parsed, &why) &&
+         strstr(why, "too many redirects"));
+  free(more);
+  free(text);
+
+  // Storage overflow and invalid destinations in the packed set.
+  sm_session_redirects_t *set_full = calloc(1, sizeof(*set_full));
+  assert(set_full);
+  assert(!sm_session_redirects_add(set_full, ""));
+  assert(!sm_session_redirects_add(set_full, long_path));
+  char half[MAX_PATH];
+  memset(half, 'b', sizeof(half) - 1);
+  half[sizeof(half) - 1] = '\0';
+  size_t added = 0;
+  while (sm_session_redirects_add(set_full, half))
+    ++added;
+  assert(added == SM_SESSION_REDIRECT_BYTES / MAX_PATH &&
+         set_full->count == added);
+  free(set_full);
+
+  free(big);
+  free(parsed);
+  free(record);
+}
+
+static void test_session_adopt_decide(void) {
+  sm_session_record_t *record = sample_record();
+  sample_mounts();
+  sm_adopt_live_t live = sample_live();
+
+  // Valid match, with unrelated mounts around ours.
+  assert(refusal(record, &live) == NULL);
+
+  // A long source shows truncated in f_mntfromname (MNAMELEN).
+  g_mounts[7].from = "/mnt/usb0/ga";
+  assert(refusal(record, &live) && strstr(refusal(record, &live), "source"));
+  g_mounts[7].from_size = 13;
+  assert(refusal(record, &live) == NULL);
+  sample_mounts();
+
+  // One layer missing.
+  g_mounts[5] = g_mounts[--g_mount_count];
+  live = sample_live();
+  const char *why = refusal(record, &live);
+  assert(why && strstr(why, "layer 2") && strstr(why, "not mounted"));
+
+  // Same path, different filesystem id.
+  sample_mounts();
+  g_mounts[5].fsid[0] = 999;
+  why = refusal(record, &live);
+  assert(why && strstr(why, "different filesystem id"));
+
+  // Different source or type.
+  sample_mounts();
+  g_mounts[6].from = "/system_ex/app/PPSA99999";
+  why = refusal(record, &live);
+  assert(why && strstr(why, "layer 3") && strstr(why, "different source"));
+  sample_mounts();
+  g_mounts[4].fstype = "nullfs";
+  why = refusal(record, &live);
+  assert(why && strstr(why, "different type"));
+
+  // A newer mount covers a layer; a duplicated id is not trusted.
+  sample_mounts();
+  g_mounts[g_mount_count++] =
+      (sm_mount_entry_t)MOUNT("nullfs", "/data", SANDBOX "/data", 555, 1);
+  live = sample_live();
+  why = refusal(record, &live);
+  assert(why && strstr(why, "covered"));
+  sample_mounts();
+  g_mounts[g_mount_count++] =
+      (sm_mount_entry_t)MOUNT("nullfs", "/elsewhere", "/mnt/elsewhere", 102, 7);
+  live = sample_live();
+  why = refusal(record, &live);
+  assert(why && strstr(why, "not unique"));
+
+  // The NSFS namespace of the redirects.
+  sample_mounts();
+  live = sample_live();
+  g_mounts[2].fsid[0] = 201;
+  why = refusal(record, &live);
+  assert(why && strstr(why, "redirect namespace"));
+  sample_mounts();
+  g_mounts[2].fstype = "nullfs";
+  why = refusal(record, &live);
+  assert(why && strstr(why, "redirect namespace") && strstr(why, "not mounted"));
+  sample_mounts();
+
+  // Different boot, dead or foreign process, another running application.
+  live.boot_time = 1700000500;
+  assert(strstr(refusal(record, &live), "another boot"));
+  live = sample_live();
+  live.boot_time = 0;
+  assert(strstr(refusal(record, &live), "another boot"));
+  live = sample_live();
+  live.game_alive = false;
+  assert(strstr(refusal(record, &live), "not running"));
+  live = sample_live();
+  live.game_app_id = 0x60000999u;
+  assert(strstr(refusal(record, &live), "recorded application"));
+  live = sample_live();
+  snprintf(live.game_title_id, sizeof(live.game_title_id), "PPSA99999");
+  assert(strstr(refusal(record, &live), "another title"));
+  live = sample_live();
+  live.running_app_id = 0x60000999u;
+  assert(strstr(refusal(record, &live), "not the running application"));
+  live = sample_live();
+  live.running_app_id = 0;
+  assert(strstr(refusal(record, &live), "not the running application"));
+  live = sample_live();
+  snprintf(live.running_title_id, sizeof(live.running_title_id), "PPSA99999");
+  assert(strstr(refusal(record, &live), "another title"));
+  live = sample_live();
+  live.running_title_id[0] = '\0';  // title of the running app unknown
+  assert(refusal(record, &live) == NULL);
+
+  // Records that cannot be adopted on their own.
+  live = sample_live();
+  record->game_pid = 0;
+  assert(strstr(refusal(record, &live), "no game process"));
+  record->game_pid = 600;
+  record->complete = false;
+  assert(strstr(refusal(record, &live), "incomplete"));
+  record->complete = true;
+  record->app_id = 0;
+  live.game_app_id = 0;
+  live.running_app_id = 0;
+  assert(strstr(refusal(record, &live), "recorded application"));
+  sm_session_record_t *empty = calloc(1, sizeof(*empty));
+  assert(empty);
+  *empty = *record;
+  empty->layer_count = empty->redirect_count = 0;
+  assert(strstr(refusal(empty, &live), "empty session record"));
+  assert(sm_session_record_kind(empty) == SM_SESSION_NONE);
+  char *text = NULL;
+  assert(sm_session_record_format(empty, "0.1.0", &text));
+  assert(sm_session_record_parse(text, strlen(text), empty, &why));
+  assert(sm_session_record_units(empty) == 0);
+  free(text);
+  assert(strstr(refusal(NULL, &live), "no session record"));
+
+  // An image session: only directory aliases outside app0.
+  sm_session_record_t *aliases = sample_record();
+  aliases->layer_count = 0;
+  aliases->redirect_count = 0;
+  add_layer(aliases, "directory", "/data", SANDBOX "/data", 102, false);
+  add_layer(aliases, "directory", "/mnt/usb0", SANDBOX "/mnt/usb0", 105, false);
+  assert(sm_session_record_kind(aliases) == SM_SESSION_ALIASES);
+  sample_mounts();
+  g_mounts[g_mount_count++] =
+      (sm_mount_entry_t)MOUNT("nullfs", "/mnt/usb0", SANDBOX "/mnt/usb0", 105, 7);
+  live = sample_live();
+  assert(refusal(aliases, &live) == NULL);
+
+  // Only created parent directories left: no mount to match, still a
+  // session to clean (not empty), counted as zero layers.
+  sm_session_record_t *parents = sample_record();
+  parents->layer_count = 0;
+  parents->redirect_count = 0;
+  add_parent(parents, SANDBOX "/preinst");
+  add_parent(parents, SANDBOX "/preinst/common");
+  assert(sm_session_record_units(parents) == 0 &&
+         !sm_session_record_empty(parents) &&
+         sm_session_record_kind(parents) == SM_SESSION_NONE);
+  live = sample_live();
+  live.mount_count = 0;
+  assert(refusal(parents, &live) == NULL);
+  // A parent entry must have been created by the owner.
+  parents->layers[0].created = false;
+  assert(sm_session_record_format(parents, "0.1.0", &text));
+  assert(!sm_session_record_parse(text, strlen(text), empty, &why));
+  free(text);
+  free(parents);
+
+  free(aliases);
+  free(empty);
+  free(record);
+}
+
 int main(void) {
+  test_session_record_format();
+  test_session_adopt_decide();
   test_startup_wait();
   test_session_kind();
   test_stop_decide();
@@ -597,8 +1077,8 @@ int main(void) {
   test_failures();
   test_auto_decide();
   test_ampr();
-  puts("unimount logic: startup wait, session kinds, stop deferral, kept "
-       "layers, takeover, "
+  puts("unimount logic: session record, adoption checks, startup wait, "
+       "session kinds, stop deferral, kept layers, takeover, "
        "adoption, ledger, compat listener, auto-mount and AMPR selection passed");
   return 0;
 }
