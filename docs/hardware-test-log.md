@@ -195,6 +195,33 @@ manager's kill during such a game still does, and cannot be prevented from insid
 is killed 1.5 seconds later. The same stop with Title B (image) running was run once on the earlier
 build and was harmless (section J, "Interrupted record").
 
+### L. Fourth session: the 0.1.1 release build — pass
+
+Run on 2026-11-21 after the console was restarted, on the build of commit `2a44ad9` (reported as
+`0.1.1`, `v0.1.0-16-g2a44ad`), the file published as `unimount_v0.1.1.elf`. Since `2a44ad9` a stop
+request is handled by what the running game has in its sandbox: a game with only directory aliases
+(image and folder titles) gets the normal teardown at once; a game with overlay layers (debug
+`.pkg` titles) defers the stop until it is closed. The error history held 45 files before and
+after every check.
+
+- Launch test: Title A, Title B and the Orbit Store app each went `running`, stayed up, closed and
+  ended `exited_normally`. Pass.
+- Replacement with no game running. Pass.
+- Replacement while Title B (image) ran: the new copy waited 27 s for the game to close. Pass.
+- Replacement while Title A (debug `.pkg`) ran: the new copy waited 24 s; when the game was closed
+  the old copy removed the `fakelib2` overlay and the alias layers, then stopped; the record ended
+  `exited_normally`. Pass.
+- Stop while Title B (image) ran, with PS5 Payload Manager's kill route: UniMount logged
+  `stopping now while <TITLE_B> is running (signal): only directory aliases in its sandbox, normal
+  teardown`, removed the three alias layers, left the busy `/system_ex/app` stack and the image
+  attached, and logged `cleanup complete for signal`, all within the same second. The game kept
+  running, was closed through the test helper while UniMount was down, and the console was still
+  answering a minute later. On the next start the record read `observation_interrupted`. Pass.
+- Layout (`layout_probe.py`, the console's own browser, 1540x700): all three titles fit. Pass.
+
+Not run: a stop while Title A runs (the known failure of K), a second stop request, and the STOP
+file.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
@@ -225,12 +252,10 @@ the ones recorded above.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
 - Installing from the public GitHub repository through PS5 Payload Manager, and a cold-boot
   autoload of UniMount (the console was not rebooted during these runs).
-- Everything committed after v0.1.0 has run on the host only: the stage tracker drawn as marks and
-  words, the job-strip and library-fit changes, and the launch-record fixes of commit `20d3c44`.
-  For those fixes the cases to run on the console are: restarting UniMount several times after a
-  launch was interrupted or crashed (the record must not change after the first restart);
-  rebooting with a game running (the old record must read `observation_interrupted`, never
-  resumed); quitting a confirmed game and stopping UniMount within a few seconds (the record must
-  read `exited_normally`); and a same-application hand-off shortly after a launch (one record).
+- Of the launch-record fixes of commit `20d3c44`: rebooting with a game running (the old record
+  must read `observation_interrupted`, never resumed) and a same-application hand-off shortly after
+  a launch (one record).
+- Of the stop handling: a second stop request and the STOP file while a game runs, and any stop
+  while a debug `.pkg` game runs other than the failure recorded in K.
 - Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.

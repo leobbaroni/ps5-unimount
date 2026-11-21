@@ -5,13 +5,13 @@
     {
       "id": "unimount",
       "name": "UniMount",
-      "filename": "unimount_v0.1.0.elf",
-      "url": "https://github.com/leobbaroni/ps5-unimount/releases/download/v0.1.0/unimount_v0.1.0.elf",
+      "filename": "unimount_v0.1.1.elf",
+      "url": "https://github.com/leobbaroni/ps5-unimount/releases/download/v0.1.1/unimount_v0.1.1.elf",
       "description": "One mount payload for PS5 games: extracted folders, exFAT/UFS/PFS images (.exfat, .ffpkg, .ffpfs, .ffpfsc) and plaintext debug .pkg files mounted directly, without converting them. Registers titles on the home screen, reports launch results with the console's own error codes, and replaces running ShadowMountPlus and Kraken Mount separately. Independent fork; not an official release of either project. Needs kstuff-lite 1.07 or newer.",
-      "version": "v0.1.0",
+      "version": "v0.1.1",
       "last_update": "2026-11-21",
       "category": "Utilities & Tools",
-      "checksum": "7dbc7cf848a58dbb68567befa59832510dd356311a4f1a7176c49e4d3edf207f",
+      "checksum": "2f8ae014005bc406363bd8ad6bda774cb406a8b0d19d976e186c3a7ef2870c8e",
       "author": "UniMount contributors (based on ShadowMountPlus by drakmor and Kraken Mount by quer3q)",
       "icon_key": "unimount",
       "source": "https://github.com/leobbaroni/ps5-unimount"
