@@ -62,6 +62,8 @@ Retail, encrypted and PS4 `.pkg` files are ignored by the automatic mount. Why d
 
 ## Install through PS5 Payload Manager
 
+The step-by-step guide, with requirements, where to put games and troubleshooting, is [`docs/install.md`](docs/install.md). In short:
+
 1. In PS5 Payload Manager's settings, enable "Multiple sources".
 2. Add this custom repository URL:
    `https://raw.githubusercontent.com/leobbaroni/ps5-unimount/main/payloads.json`
@@ -139,6 +141,7 @@ Run from a clean checkout. Build and test before committing. See [`docs/unimount
 
 ## Documentation
 
+- [`docs/install.md`](docs/install.md): installation and setup, step by step.
 - [`docs/unimount-architecture.md`](docs/unimount-architecture.md): design decision, components, lifecycles, ports and paths.
 - [`docs/unimount-ownership.md`](docs/unimount-ownership.md), [`docs/unimount-diagnostics.md`](docs/unimount-diagnostics.md), [`docs/api.md`](docs/api.md)
 - [`docs/shadowmountplus-reference.md`](docs/shadowmountplus-reference.md): formats, scanning, backports, image creation (upstream reference).

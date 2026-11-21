@@ -137,6 +137,29 @@ progress" (the payload had been replaced seconds after that launch).
   deferred … Device busy`). After the game was closed the record ended `exited_normally` with
   `exit not observed directly`, and the layers were released.
 
+### J. Second session: the 0.1.1 candidate — one failure
+
+Run later on 2026-11-21 with the scripts in `tools/hwtest/`, on the build of commit `115d549`
+(reported as `0.1.1`, `v0.1.0-8-g115d54`). The error history held 43 files at the start: two
+entries from the console's web browser had been added since the first session.
+
+- Launch test (`console_check.py launch`): Title A, Title B and the Orbit Store app each went
+  `running`, stayed up, closed, and ended `exited_normally`; the error history stayed at 43. Pass.
+- Layout (`layout_probe.py`, the console's own browser, 1540x700): all three titles fit, with the
+  stage line 28 px tall and the 40-character title at 56 px on two lines. Pass.
+- Interrupted record: with Title B confirmed running, UniMount was stopped and the game closed
+  while it was down. On the next start the record read `observation_interrupted` with one such
+  timeline entry; after two more restarts the record was byte-identical. Pass.
+- Quit, then stop: Title B was closed and UniMount stopped one second after the close returned. The
+  record read `exited_normally` (the watcher had already finalised the exit). Pass.
+- **Replacing UniMount while Title A (debug `.pkg`) was running: failure.** A second copy was
+  loaded eight seconds after the launch. The game kept running and the new copy re-attached to it
+  (`observation_resumed`, then `running`). The close request then failed (`close_failed`, the
+  system refused to end the application), and within a minute the console stopped answering and
+  left the network. The same sequence with Title B (an `.exfat` image) had passed in section I.
+  The cause had not been established when this was written; until it is, UniMount must not be
+  loaded or updated while a game is running.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
