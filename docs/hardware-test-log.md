@@ -218,6 +218,10 @@ after every check.
   running, was closed through the test helper while UniMount was down, and the console was still
   answering a minute later. On the next start the record read `observation_interrupted`. Pass.
 - Layout (`layout_probe.py`, the console's own browser, 1540x700): all three titles fit. Pass.
+- Install from the public repository: the `payloads.json` address was added as a source in PS5
+  Payload Manager and UniMount v0.1.1 installed from it; the slot's checksum equalled the
+  published one. Loading that slot replaced the test copy, and Title A then passed the launch
+  test again. ShadowMountPlus and Kraken Mount were deleted from Payload Manager afterwards. Pass.
 
 Not run: a stop while Title A runs (the known failure of K), a second stop request, and the STOP
 file.
@@ -250,8 +254,9 @@ the ones recorded above.
   real error-history entries (CE-107750-0, CE-105779-9, CE-105773-3, CE-108262-9), but no launch
   failed during these runs.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
-- Installing from the public GitHub repository through PS5 Payload Manager, and a cold-boot
-  autoload of UniMount (the console was not rebooted during these runs).
+- A cold-boot autoload of UniMount: it is in the autoload list after kstuff-lite, but no restart
+  was run after that. After each of the two crashes Payload Manager came back with its autoload
+  sequence aborted, so every payload was loaded by hand.
 - Of the launch-record fixes of commit `20d3c44`: rebooting with a game running (the old record
   must read `observation_interrupted`, never resumed) and a same-application hand-off shortly after
   a launch (one record).
