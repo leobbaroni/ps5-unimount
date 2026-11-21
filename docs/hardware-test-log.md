@@ -157,8 +157,12 @@ entries from the console's web browser had been added since the first session.
   (`observation_resumed`, then `running`). The close request then failed (`close_failed`, the
   system refused to end the application), and within a minute the console stopped answering and
   left the network. The same sequence with Title B (an `.exfat` image) had passed in section I.
-  The cause had not been established when this was written; until it is, UniMount must not be
-  loaded or updated while a game is running.
+  Traced by reading the code, not yet confirmed from the console's log: the copy being replaced
+  shut down and unmounted the layers it had added to the running game's sandbox, which for a
+  debug `.pkg` title include the emulation library the game runs on; the new copy never owned the
+  game. Commit `2e3e1a6` changes this: UniMount waits instead of starting or taking over while one
+  of its games runs, defers a stop request until the game has closed, and on a forced stop leaves
+  the game's layers in place. That commit has run on the host only.
 
 ## Repeating these checks
 
