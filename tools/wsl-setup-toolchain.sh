@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Toolchain setup for upstream baseline builds (WSL2 Ubuntu 26.04, run as root).
 #
-#   wsl -d Ubuntu -u root -- bash /mnt/c/Users/TugaPlayz/Desktop/GITHUB/ps5-unimount/tools/wsl-setup-toolchain.sh
+#   wsl -d Ubuntu -u root -- bash <checkout>/tools/wsl-setup-toolchain.sh
 #
 # Installs:
 #   - apt build deps (ShadowMountPlus CI list, with the distro's clang/lld/llvm 21 instead of 18;
@@ -17,7 +17,7 @@
 # (the sdk package always tracks git HEAD at build time).
 set -euo pipefail
 
-UPSTREAM=${UPSTREAM:-/mnt/c/Users/TugaPlayz/Desktop/GITHUB/ps5-unimount/_upstream}
+UPSTREAM=${UPSTREAM:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_upstream}
 SRC=${SRC:-/opt/build/src}
 PACBREW_REPO_URL=https://github.com/ps5-payload-dev/pacbrew-repo
 PACBREW_REPO_REF=${PACBREW_REPO_REF:-}   # empty = HEAD (as SMP CI); set a commit to pin

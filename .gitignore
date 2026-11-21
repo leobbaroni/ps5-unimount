@@ -24,3 +24,4 @@ docs/*
 /.impeccable/fixtures/
 /.impeccable/questions/
 /.impeccable/reference/
+/.impeccable/hook.cache.json

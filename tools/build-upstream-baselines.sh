@@ -2,14 +2,14 @@
 # Baseline builds of the two upstream payloads, unmodified (WSL2 Ubuntu 26.04, root).
 # Run tools/wsl-setup-toolchain.sh first.
 #
-#   wsl -d Ubuntu -u root -- bash /mnt/c/Users/TugaPlayz/Desktop/GITHUB/ps5-unimount/tools/build-upstream-baselines.sh
+#   wsl -d Ubuntu -u root -- bash <checkout>/tools/build-upstream-baselines.sh
 #
 # Clones the committed HEADs of _upstream/{shadowMountPlus,kraken-mount} into /opt/build (LF
 # checkouts; _upstream is only read), builds both, runs the host checks and copies the ELFs to
 # _upstream/_baseline/. Build only: nothing here talks to a console.
 set -euo pipefail
 
-UPSTREAM=${UPSTREAM:-/mnt/c/Users/TugaPlayz/Desktop/GITHUB/ps5-unimount/_upstream}
+UPSTREAM=${UPSTREAM:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_upstream}
 BUILD=${BUILD:-/opt/build}
 SRC=$BUILD/src
 BASELINE=$UPSTREAM/_baseline
