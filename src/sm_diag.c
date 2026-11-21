@@ -106,8 +106,10 @@ static sm_diag_process_state_t probe_process(pid_t pid, const char *title_id,
     return SM_DIAG_PROC_GONE;
   app_info_t info;
   memset(&info, 0, sizeof(info));
+  // The PID exists but its application identity cannot be read: neither
+  // proof of the same game nor of a different one.
   if (sceKernelGetAppInfo(pid, &info) != 0)
-    return SM_DIAG_PROC_OTHER; // Not an application any more.
+    return SM_DIAG_PROC_UNKNOWN;
   size_t length = strnlen(info.title_id, sizeof(info.title_id));
   if (length == 0 || length >= sizeof(info.title_id) ||
       strncmp(info.title_id, title_id, sizeof(info.title_id)) != 0 ||
@@ -926,7 +928,7 @@ static bool reconcile_liveness(const sm_diag_policy_t *policy) {
 // At shutdown: launches whose process is already gone cannot be observed by
 // the next run either, so finalise them now. A game still running is saved in
 // progress and resolved by the next start (re-attach or interrupt).
-static void finalise_for_shutdown(void) {
+static void finalise_for_shutdown(const sm_diag_policy_t *policy) {
   liveness_job_t jobs[SM_DIAG_MAX_RECORDS];
   size_t count = 0;
   pthread_mutex_lock(&g_diag.store_mutex);
@@ -944,16 +946,13 @@ static void finalise_for_shutdown(void) {
   for (size_t i = 0; i < count; ++i) {
     sm_diag_process_state_t state =
         probe_process(jobs[i].pid, jobs[i].title_id, jobs[i].app_id);
-    if (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNVERIFIED)
-      continue;
     pthread_mutex_lock(&g_diag.store_mutex);
     sm_diag_record_t *rec = sm_diag_store_find_id(&g_diag.store, jobs[i].id);
-    if (rec && rec->pid == jobs[i].pid && sm_diag_record_unfinished(rec)) {
-      sm_diag_record_interrupt(rec, wall_time_ms(),
-                               "UniMount stopped before this was observed; the "
-                               "game process is gone");
-      mark_dirty_locked(monotonic_time_us());
-    }
+    uint64_t now_us = monotonic_time_us();
+    if (rec && rec->pid == jobs[i].pid &&
+        sm_diag_record_finalise_for_shutdown(rec, policy, state, wall_time_ms(),
+                                             now_us))
+      mark_dirty_locked(now_us);
     pthread_mutex_unlock(&g_diag.store_mutex);
   }
 }
@@ -1078,7 +1077,11 @@ static void *diag_thread_main(void *arg) {
     }
     wait_us = periodic(&cfg);
   }
-  finalise_for_shutdown();
+  {
+    const runtime_config_t cfg = runtime_config();
+    const sm_diag_policy_t policy = current_policy(&cfg);
+    finalise_for_shutdown(&policy);
+  }
   // Last record written before app.db, mdbg and the log are torn down.
   persist_if_due(monotonic_time_us(), true);
   return NULL;

@@ -66,6 +66,7 @@ typedef enum {
   SM_DIAG_PROC_OTHER,       // PID exists but is another application (reused).
   SM_DIAG_PROC_SAME,        // Same title and app id as recorded.
   SM_DIAG_PROC_UNVERIFIED,  // Same title; app id unknown so not provable.
+  SM_DIAG_PROC_UNKNOWN,     // PID exists but its identity could not be read.
 } sm_diag_process_state_t;
 
 // Finding kinds reported by sm_mdbg (see sm_mdbg.c handle_game_failure()).
@@ -198,6 +199,8 @@ typedef struct {
   uint64_t last_alive_mono_us;   // Last positive liveness probe of pid.
   uint64_t next_liveness_mono_us;
   unsigned gone_probes;
+  unsigned unknown_probes;
+  bool reattached; // Resumed from launches.json in this run.
   uint64_t error_window_end_mono_us;
   uint64_t klog_scan_due_mono_us;
   char klog_anchor[SM_DIAG_KLOG_ANCHOR_SIZE];
@@ -224,6 +227,9 @@ typedef struct {
 #define SM_DIAG_EXIT_FINAL_GRACE_SECONDS 60u
 // Consecutive "gone" probes before a missed exit is concluded.
 #define SM_DIAG_GONE_PROBES 2u
+// Consecutive unreadable-identity probes before the launch is interrupted
+// (about 30 s before confirmation, longer after).
+#define SM_DIAG_UNKNOWN_PROBES 30u
 
 typedef enum {
   SM_DIAG_EV_LAUNCH = 1,
@@ -297,9 +303,12 @@ bool sm_diag_record_unfinished(const sm_diag_record_t *rec);
 void sm_diag_record_interrupt(sm_diag_record_t *rec, int64_t now_ms,
                               const char *reason);
 // Resolve a record restored from launches.json. state is the probe of its PID
-// (ignored when there is none). SAME re-attaches it to this run (monotonic
-// times rebased from the wall clock) and returns true; anything else
-// finalises it with sm_diag_record_interrupt() and returns false.
+// (ignored when there is none). SAME, or UNKNOWN (PID exists, identity not
+// readable; settled by reconciliation), re-attaches it to this run (monotonic
+// times rebased from the wall clock) and returns true, provided the process
+// started during this boot; anything else finalises it with
+// sm_diag_record_interrupt() and returns false. Finished records are left
+// untouched, so resolving again changes nothing.
 bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
                                      sm_diag_process_state_t state,
                                      int64_t now_ms, uint64_t now_mono_us);
@@ -307,6 +316,13 @@ bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
 // final, probe due).
 bool sm_diag_record_liveness_due(const sm_diag_record_t *rec,
                                  uint64_t now_mono_us);
+// Shutdown: finalise an unfinished launch whose process is gone (an observed
+// NOTE_EXIT concludes the exit; otherwise observation_interrupted). A process
+// that still exists is left in progress. Returns true when it changed.
+bool sm_diag_record_finalise_for_shutdown(sm_diag_record_t *rec,
+                                          const sm_diag_policy_t *policy,
+                                          sm_diag_process_state_t state,
+                                          int64_t now_ms, uint64_t now_mono_us);
 // Apply one liveness probe (bounded reconciliation of missed exits). Returns
 // true when the record changed.
 bool sm_diag_record_note_liveness(sm_diag_record_t *rec,

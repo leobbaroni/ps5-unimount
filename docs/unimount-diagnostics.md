@@ -91,8 +91,15 @@ consecutive probes without an exit event, the exit is concluded with the detail
 "exit not observed directly" - `exited_normally` when running was confirmed,
 `exited_early` when the process vanished before the confirmation time, and
 `observation_interrupted` when it vanished later without a probe proving it
-lived that long. A `NOTE_EXIT` whose final exit is never reported is concluded
-60 s later with the observed exit time.
+lived that long. A `running_confirmed` already decided (`ok`, or `failed` by a
+fatal finding) is never changed by this. A `NOTE_EXIT` whose final exit is
+never reported is concluded 60 s later with the observed exit time. When the
+PID exists but its application identity cannot be read, the probe counts
+neither as alive (no confirmation) nor as gone; after 30 such probes in a row
+the launch is interrupted (`observation_interrupted`). If a new process is
+reported on the PID of a launch whose exit was missed, that launch's exit is
+concluded the same way and the new process gets its own record. A same-app
+handoff never revives a launch whose exit was already concluded.
 
 A mount or registration success never makes a launch `running`: only the
 lifecycle watcher's process plus the confirmation time does. A same-app
@@ -250,14 +257,19 @@ changed, from the diagnostics thread, and once more at shutdown. They are restor
 the first diagnostics use after start. No record stays "in progress" across a
 restart:
 
-- At shutdown, an unfinished launch whose process is already gone is finalised
-  as `observation_interrupted`; a game that is still running is saved in
+- At shutdown, an unfinished launch whose process is already gone is finalised:
+  with an observed `NOTE_EXIT` its exit is concluded at that time (so a
+  confirmed game is `exited_normally`), otherwise it becomes
+  `observation_interrupted`. A game that is still running is saved in
   progress.
 - On restore, an unfinished launch whose PID still runs the same application
   (same title and app id; a reused PID or an unknown app id does not count) is
   re-attached: its monotonic times are rebased from the wall clock, an
   `observation_resumed` timeline entry is added, and it keeps being observed
-  until `running_confirmed` and `exited` are reached.
+  until `running_confirmed` and `exited` are reached. A PID that exists but
+  whose identity cannot be read is re-attached the same way and left to the
+  probes above. A process that started before the current boot (its start is
+  older than the uptime) is never re-attached.
 - Any other unfinished launch becomes `observation_interrupted` with
   `observation_interrupted: true`; its pending or unreached stages
   (`running_confirmed`, `exited`, ...) become `not_observed` with the detail
@@ -266,8 +278,9 @@ restart:
   error, kernel-log line) was attached before the interruption; an observed
   verdict such as `crashed` is kept.
 
-Finished records are restored as they were and never re-evaluated or absorb a
-process of the current run. Monotonic timestamps (`mono_us`) only compare
+Finished records, including interrupted ones that kept an observed verdict
+such as `crashed`, are restored as they were and never re-evaluated or absorb
+a process of the current run; restoring them again changes nothing. Monotonic timestamps (`mono_us`) only compare
 within one UniMount run.
 
 ## Honest limits

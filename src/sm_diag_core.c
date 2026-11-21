@@ -344,6 +344,12 @@ bool sm_diag_record_unfinished(const sm_diag_record_t *rec) {
     if (rec->stages[i].state == SM_DIAG_PENDING)
       return true;
   }
+  // sm_diag_record_interrupt() leaves no pending stage; an interrupted record
+  // that kept an observed verdict (crashed) is final. Records written by
+  // older builds (interrupted but still in progress or pending) were caught
+  // above and are resolved once.
+  if (rec->interrupted)
+    return false;
   return rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK &&
          rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK;
 }
@@ -395,7 +401,15 @@ bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
                                      int64_t now_ms, uint64_t now_mono_us) {
   if (!sm_diag_record_unfinished(rec))
     return false;
-  bool live = rec->pid > 0 && state == SM_DIAG_PROC_SAME &&
+  // A process started before this boot cannot be the one now holding the PID
+  // (the monotonic clock counts from boot), whatever its title and app id.
+  int64_t start_ms = rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].at_ms;
+  bool this_boot = start_ms > 0 && now_ms >= start_ms &&
+                   (uint64_t)(now_ms - start_ms) * 1000u < now_mono_us;
+  // UNKNOWN: the PID exists but its identity could not be read; keep it for
+  // the runtime reconciliation to settle (bounded there).
+  bool live = rec->pid > 0 && this_boot &&
+              (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNKNOWN) &&
               rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK &&
               rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK;
   if (!live) {
@@ -422,12 +436,18 @@ bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
   rec->launch_failed_mono_us = 0;
   rec->restored = false;
   rec->interrupted = false;
-  rec->last_alive_mono_us = now_mono_us;
+  // Only a probe that proved the identity counts as seen alive.
+  rec->last_alive_mono_us = state == SM_DIAG_PROC_SAME ? now_mono_us : 0;
   rec->next_liveness_mono_us = 0;
   rec->gone_probes = 0;
+  rec->unknown_probes = 0;
+  rec->reattached = true;
   sm_diag_record_add_event(rec, now_ms, now_mono_us, "observation_resumed",
-                           "pid=%ld app_id=0x%08X still running after restart",
-                           (long)rec->pid, rec->app_id);
+                           "pid=%ld app_id=0x%08X %s after restart",
+                           (long)rec->pid, rec->app_id,
+                           state == SM_DIAG_PROC_SAME
+                               ? "still running"
+                               : "still exists (identity not readable yet)");
   return true;
 }
 
@@ -450,22 +470,37 @@ static void conclude_exit(sm_diag_record_t *rec, uint64_t exit_mono,
                            detail);
 }
 
+static void conclude_vanished(sm_diag_record_t *rec,
+                              const sm_diag_policy_t *policy, int64_t now_ms,
+                              uint64_t now_mono_us);
+
 bool sm_diag_record_note_liveness(sm_diag_record_t *rec,
                                   const sm_diag_policy_t *policy,
                                   sm_diag_process_state_t state, int64_t now_ms,
                                   uint64_t now_mono_us) {
   if (!sm_diag_record_liveness_due(rec, UINT64_MAX))
     return false;
-  const uint64_t confirm_us = (uint64_t)policy->running_confirm_seconds * 1000000u;
-  const uint64_t start = rec->process_start_mono_us;
   bool confirmed = rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_OK;
   // Probe about once a second until confirmed, then every five seconds.
   rec->next_liveness_mono_us = now_mono_us + (confirmed ? 5000000u : 1000000u);
   if (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNVERIFIED) {
     rec->last_alive_mono_us = now_mono_us;
     rec->gone_probes = 0;
+    rec->unknown_probes = 0;
     return sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
   }
+  if (state == SM_DIAG_PROC_UNKNOWN) {
+    // The PID exists but its identity could not be read: neither proof of
+    // life (no confirmation) nor of an exit. Bounded: if it never becomes
+    // readable, the launch cannot be followed and is interrupted.
+    rec->gone_probes = 0;
+    if (++rec->unknown_probes < SM_DIAG_UNKNOWN_PROBES)
+      return false;
+    sm_diag_record_interrupt(rec, now_ms,
+                             "the game process could not be identified any more");
+    return true;
+  }
+  rec->unknown_probes = 0;
   char detail[SM_DIAG_DETAIL_SIZE];
   if (rec->exit_pending) {
     // NOTE_EXIT was observed; the lifecycle's final exit normally follows after
@@ -483,27 +518,40 @@ bool sm_diag_record_note_liveness(sm_diag_record_t *rec,
   // Wait for a second "gone" probe: a same-app handoff announces itself first.
   if (++rec->gone_probes < SM_DIAG_GONE_PROBES)
     return false;
+  conclude_vanished(rec, policy, now_ms, now_mono_us);
+  return true;
+}
+
+static void conclude_vanished(sm_diag_record_t *rec,
+                              const sm_diag_policy_t *policy, int64_t now_ms,
+                              uint64_t now_mono_us) {
+  const uint64_t confirm_us = (uint64_t)policy->running_confirm_seconds * 1000000u;
+  const uint64_t start = rec->process_start_mono_us;
+  sm_diag_state_t confirm_state = rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state;
+  // ok or failed (fatal finding / early exit) is a decided verdict: keep it.
+  bool decided = confirm_state == SM_DIAG_OK || confirm_state == SM_DIAG_FAILED;
+  char detail[SM_DIAG_DETAIL_SIZE];
   // The process vanished without an observed exit: alive at last_alive,
   // gone now.
   uint64_t last_alive = rec->last_alive_mono_us > start ? rec->last_alive_mono_us : start;
   double alive_s = (double)(last_alive - start) / 1e6;
   double gone_s = now_mono_us > start ? (double)(now_mono_us - start) / 1e6 : 0.0;
-  if (!confirmed && last_alive >= start + confirm_us) {
+  if (!decided && last_alive >= start + confirm_us) {
     sm_diag_record_set_stage(rec, SM_DIAG_STAGE_RUNNING_CONFIRMED, SM_DIAG_OK,
                              now_ms, start + confirm_us,
                              "process seen alive %.1f s after start", alive_s);
-    confirmed = true;
+    decided = true;
   }
-  if (confirmed || now_mono_us < start + confirm_us) {
-    // Confirmed earlier: exited_normally. Gone before the confirmation time
-    // was even reached: exited_early.
+  if (decided || now_mono_us < start + confirm_us) {
+    // Confirmed earlier: exited_normally (crashed when a fatal finding
+    // decided it). Gone before the confirmation time: exited_early.
     snprintf(detail, sizeof(detail),
              "exit not observed directly: pid=%ld gone %.1f s after start "
              "(last seen alive at %.1f s)",
              (long)rec->pid, gone_s, alive_s);
     conclude_exit(rec, now_mono_us, now_ms, detail);
     (void)sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
-    return true;
+    return;
   }
   // Gone after the confirmation time without a probe proving it lived that
   // long: whether it ran long enough is unknown.
@@ -515,6 +563,33 @@ bool sm_diag_record_note_liveness(sm_diag_record_t *rec,
   sm_diag_record_interrupt(rec, now_ms,
                            "process gone before running could be confirmed or "
                            "refuted");
+}
+
+bool sm_diag_record_finalise_for_shutdown(sm_diag_record_t *rec,
+                                          const sm_diag_policy_t *policy,
+                                          sm_diag_process_state_t state,
+                                          int64_t now_ms, uint64_t now_mono_us) {
+  if (rec->restored || rec->pid <= 0 || !sm_diag_record_unfinished(rec))
+    return false;
+  // A process that still exists is saved in progress; the next start decides.
+  if (state == SM_DIAG_PROC_SAME || state == SM_DIAG_PROC_UNVERIFIED ||
+      state == SM_DIAG_PROC_UNKNOWN)
+    return false;
+  if (rec->exit_pending) {
+    // NOTE_EXIT was observed while the lifecycle's handoff grace was running:
+    // the exit is known, only its final confirmation was not.
+    char detail[SM_DIAG_DETAIL_SIZE];
+    snprintf(detail, sizeof(detail),
+             "pid=%ld exited (NOTE_EXIT observed); UniMount stopped before the "
+             "final exit",
+             (long)rec->pid);
+    conclude_exit(rec, rec->exit_mono_us, rec->exit_ms, detail);
+    (void)sm_diag_record_evaluate(rec, policy, now_ms, now_mono_us);
+    return true;
+  }
+  sm_diag_record_interrupt(rec, now_ms,
+                           "UniMount stopped before this was observed; the "
+                           "game process is gone");
   return true;
 }
 
@@ -734,10 +809,14 @@ sm_diag_record_t *sm_diag_store_apply(sm_diag_store_t *store,
                              input->status);
     break;
   case SM_DIAG_EV_PROCESS_STARTED: {
-    // A record re-attached after a restart already owns this live process.
     rec = find_by_pid(store, input->pid);
-    if (rec && strcmp(rec->title_id, input->title_id) == 0 && !rec->interrupted &&
-        rec->stages[SM_DIAG_STAGE_EXITED].state != SM_DIAG_OK &&
+    if (rec && (rec->stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_OK ||
+                rec->interrupted))
+      rec = NULL;
+    // Only a record re-attached after a restart may be re-reported for the
+    // process it already owns; within one run the lifecycle watcher reports
+    // each process once, so the same PID again is a new process.
+    if (rec && rec->reattached && strcmp(rec->title_id, input->title_id) == 0 &&
         (rec->app_id == 0 || input->app_id == 0 || rec->app_id == input->app_id)) {
       if (rec->app_id == 0)
         rec->app_id = input->app_id;
@@ -745,6 +824,14 @@ sm_diag_record_t *sm_diag_store_apply(sm_diag_store_t *store,
                                "pid=%ld app_id=0x%08X", (long)input->pid,
                                input->app_id);
       break;
+    }
+    if (rec) {
+      // A new process now holds the PID: the old one is gone and its exit was
+      // missed.
+      conclude_vanished(rec, policy, at, mono);
+      sm_diag_record_add_event(rec, at, mono, "pid_reused",
+                               "pid=%ld started again (new process)",
+                               (long)input->pid);
     }
     rec = find_waiting_launch(store, policy, input, true);
     if (!rec) {
@@ -794,12 +881,17 @@ sm_diag_record_t *sm_diag_store_apply(sm_diag_store_t *store,
     break;
   case SM_DIAG_EV_PROCESS_HANDOFF:
     rec = find_by_pid(store, input->pid);
-    if (!rec)
+    // An exit already concluded (by reconciliation) is final.
+    if (!rec || rec->stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_OK)
       return NULL;
     rec->pid = input->new_pid;
     rec->exit_pending = false;
     rec->exit_mono_us = 0;
     rec->exit_ms = 0;
+    // Probe the new PID from scratch; a stale gone count must not carry over.
+    rec->gone_probes = 0;
+    rec->unknown_probes = 0;
+    rec->next_liveness_mono_us = 0;
     sm_diag_record_add_event(rec, at, mono, "process_handoff",
                              "pid=%ld -> pid=%ld", (long)input->pid,
                              (long)input->new_pid);

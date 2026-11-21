@@ -533,8 +533,238 @@ static void test_missed_exit_reconciliation(void) {
   // a second record.
   rec = launch(&store, 0, 600);
   start_process(&store, 205, 601);
+  rec->reattached = true; // as sm_diag_record_resolve_restored() leaves it
   size_t before = sm_diag_store_count(&store);
   assert(start_process(&store, 205, 640) == rec && sm_diag_store_count(&store) == before);
+  sm_diag_store_free(&store);
+}
+
+// --- Review fixes ---
+
+static size_t timeline_json_size(const sm_diag_record_t *rec, char *out,
+                                 size_t size) {
+  struct json_object *json = sm_diag_record_to_json(rec);
+  const char *text = json_object_to_json_string_ext(json, JSON_C_TO_STRING_PLAIN);
+  strlcpy(out, text, size);
+  json_object_put(json);
+  return rec->timeline_count;
+}
+
+// 1. Resolving restored records is idempotent, including a crashed launch
+// whose process was still alive when UniMount stopped.
+static void test_restore_is_idempotent(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *live = launch(&store, 0, 0);
+  start_process(&store, 77, 1);
+  sm_diag_input_t finding = event(SM_DIAG_EV_FINDING, 2);
+  finding.pid = 77;
+  finding.finding_kind = SM_DIAG_FINDING_FATAL;
+  strlcpy(finding.text, "signal: 11 (SIGSEGV)", sizeof(finding.text));
+  apply(&store, finding);
+  assert(live->outcome == SM_DIAG_OUTCOME_CRASHED && sm_diag_record_unfinished(live));
+  struct json_object *json = sm_diag_record_to_json(live);
+  sm_diag_record_t rec;
+  assert(sm_diag_record_from_json(json, &rec));
+  json_object_put(json);
+  sm_diag_store_free(&store);
+
+  static char first[65536], again[65536];
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                          100 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_CRASHED && rec.interrupted);
+  assert(rec.stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_NOT_OBSERVED);
+  assert(!sm_diag_record_unfinished(&rec));
+  size_t events = timeline_json_size(&rec, first, sizeof(first));
+  for (int restart = 0; restart < 3; ++restart) {
+    // Persist, restore, resolve again: even a matching live PID must not
+    // re-attach a finished record.
+    json = sm_diag_record_to_json(&rec);
+    assert(sm_diag_record_from_json(json, &rec));
+    json_object_put(json);
+    assert(!sm_diag_record_unfinished(&rec));
+    assert(!sm_diag_record_resolve_restored(&rec, restart == 1 ? SM_DIAG_PROC_SAME
+                                                               : SM_DIAG_PROC_GONE,
+                                            k_wall0 + 60000 + restart * 1000,
+                                            (100u + (unsigned)restart) * SECOND));
+    assert(timeline_json_size(&rec, again, sizeof(again)) == events);
+    assert(!strcmp(first, again));
+    assert(!sm_diag_record_finalise_for_shutdown(&rec, policy(), SM_DIAG_PROC_GONE,
+                                                 k_wall0, 100 * SECOND));
+  }
+  // Records of the previous build (interrupted, still in progress) are
+  // resolved exactly once.
+  sm_diag_record_t old;
+  restore_running_launch(&old, false);
+  old.interrupted = true;
+  assert(sm_diag_record_unfinished(&old));
+  (void)sm_diag_record_resolve_restored(&old, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                        100 * SECOND);
+  size_t old_events = old.timeline_count;
+  assert(!sm_diag_record_unfinished(&old));
+  (void)sm_diag_record_resolve_restored(&old, SM_DIAG_PROC_GONE, k_wall0 + 61000,
+                                        101 * SECOND);
+  assert(old.timeline_count == old_events);
+}
+
+// 2. A failed running_confirmed (fatal finding) is never overwritten.
+static void test_vanish_keeps_failed_confirmation(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  start_process(&store, 88, 1);
+  sm_diag_input_t finding = event(SM_DIAG_EV_FINDING, 3);
+  finding.pid = 88;
+  finding.finding_kind = SM_DIAG_FINDING_FATAL;
+  strlcpy(finding.text, "signal: 11 (SIGSEGV)", sizeof(finding.text));
+  apply(&store, finding);
+  assert(rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_FAILED);
+  for (int s = 4; s <= 30; ++s)
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 31000, k_mono0 + 31 * SECOND);
+  assert(sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                      k_wall0 + 32000, k_mono0 + 32 * SECOND));
+  assert(rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_FAILED);
+  assert(rec->stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_OK);
+  assert(rec->outcome == SM_DIAG_OUTCOME_CRASHED && !rec->interrupted);
+  sm_diag_store_free(&store);
+}
+
+// 3. A record from a previous boot is never re-attached.
+static void test_previous_boot_is_not_reattached(void) {
+  sm_diag_record_t rec;
+  restore_running_launch(&rec, false);
+  // Rebooted: uptime 30 s, but the process started an hour ago.
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_SAME,
+                                          k_wall0 + 3600000, 30 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED && rec.interrupted);
+  // The same record while this boot has run long enough is re-attached.
+  restore_running_launch(&rec, false);
+  assert(sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_SAME, k_wall0 + 3600000,
+                                         7200 * SECOND));
+  assert(rec.process_start_mono_us > 1u);
+}
+
+// 4. A handoff cannot revive a concluded exit, and resets the gone count.
+static void test_handoff_after_reconciled_exit(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  start_process(&store, 90, 1);
+  for (int s = 2; s <= 22; ++s)
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 30000, k_mono0 + 30 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 35000, k_mono0 + 35 * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_EXITED_NORMALLY);
+  sm_diag_input_t handoff = event(SM_DIAG_EV_PROCESS_HANDOFF, 36);
+  handoff.pid = 90;
+  handoff.new_pid = 91;
+  assert(apply(&store, handoff) == NULL);
+  assert(rec->pid == 90 && rec->outcome == SM_DIAG_OUTCOME_EXITED_NORMALLY);
+
+  // One gone probe, then a handoff: the new PID needs two gone probes again.
+  rec = launch(&store, 0, 100);
+  start_process(&store, 92, 101);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                     k_wall0 + 102000, k_mono0 + 102 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 103000, k_mono0 + 103 * SECOND);
+  handoff = event(SM_DIAG_EV_PROCESS_HANDOFF, 103.5);
+  handoff.pid = 92;
+  handoff.new_pid = 93;
+  assert(apply(&store, handoff) == rec && rec->pid == 93);
+  assert(!sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                       k_wall0 + 104500, k_mono0 + 104500000ull));
+  assert(rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS);
+  sm_diag_store_free(&store);
+}
+
+// 5. Shutdown with an observed NOTE_EXIT concludes the exit.
+static void test_shutdown_with_observed_exit(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  start_process(&store, 94, 1);
+  for (int s = 2; s <= 22; ++s)
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_RUNNING);
+  pid_event(&store, SM_DIAG_EV_PROCESS_EXIT, 94, 40);
+  // Still alive at shutdown: kept in progress.
+  assert(!sm_diag_record_finalise_for_shutdown(rec, probe_policy(), SM_DIAG_PROC_UNKNOWN,
+                                               k_wall0 + 41000, k_mono0 + 41 * SECOND));
+  assert(sm_diag_record_finalise_for_shutdown(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                              k_wall0 + 42000, k_mono0 + 42 * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_EXITED_NORMALLY && !rec->interrupted);
+  assert(rec->exit_mono_us == k_mono0 + 40 * SECOND);
+  // Without an observed exit the launch is interrupted.
+  rec = launch(&store, 0, 100);
+  start_process(&store, 95, 101);
+  assert(sm_diag_record_finalise_for_shutdown(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                              k_wall0 + 105000, k_mono0 + 105 * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+  sm_diag_store_free(&store);
+}
+
+// 6. An unreadable identity neither confirms nor ends a launch (bounded).
+static void test_unknown_identity(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  start_process(&store, 96, 1);
+  for (unsigned i = 0; i + 1u < SM_DIAG_UNKNOWN_PROBES; ++i)
+    assert(!sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_UNKNOWN,
+                                         k_wall0 + 2000 + (int64_t)i * 1000,
+                                         k_mono0 + (2u + i) * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS); // not running past 20 s
+  // Unknown probes interleaved with one gone probe do not add up to "gone".
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 40000, k_mono0 + 40 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                     k_wall0 + 41000, k_mono0 + 41 * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_RUNNING);
+  for (unsigned i = 0; i < SM_DIAG_UNKNOWN_PROBES; ++i) {
+    rec->next_liveness_mono_us = 0;
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_UNKNOWN,
+                                       k_wall0 + 50000 + (int64_t)i * 5000,
+                                       k_mono0 + (50u + 5u * i) * SECOND);
+  }
+  assert(rec->outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+  sm_diag_store_free(&store);
+
+  // At restore an unknown identity keeps the launch for reconciliation.
+  sm_diag_record_t restored;
+  restore_running_launch(&restored, false);
+  assert(sm_diag_record_resolve_restored(&restored, SM_DIAG_PROC_UNKNOWN,
+                                         k_wall0 + 10000, 100 * SECOND));
+  assert(!restored.restored && sm_diag_record_unfinished(&restored));
+  assert(restored.last_alive_mono_us == 0);
+  (void)sm_diag_record_note_liveness(&restored, probe_policy(), SM_DIAG_PROC_SAME,
+                                     k_wall0 + 30000, 120 * SECOND);
+  assert(restored.outcome == SM_DIAG_OUTCOME_RUNNING);
+}
+
+// 7. A same-title relaunch on a reused PID after a missed exit opens its own
+// record (bound to ShellCore's LAUNCH) and closes the old one.
+static void test_pid_reuse_relaunch(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *old = launch(&store, 0, 0);
+  start_process(&store, 97, 1);
+  for (int s = 2; s <= 22; ++s)
+    (void)sm_diag_record_note_liveness(old, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  sm_diag_record_t *next = launch(&store, 0, 25);
+  assert(next != old);
+  assert(start_process(&store, 97, 26) == next);
+  assert(next->stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_OK);
+  assert(old->stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_OK);
+  assert(strstr(old->stages[SM_DIAG_STAGE_EXITED].detail, "exit not observed directly"));
   sm_diag_store_free(&store);
 }
 
@@ -1047,6 +1277,13 @@ int main(int argc, char **argv) {
   test_restore_without_process_is_interrupted();
   test_restore_with_same_process_reattaches();
   test_missed_exit_reconciliation();
+  test_restore_is_idempotent();
+  test_vanish_keeps_failed_confirmation();
+  test_previous_boot_is_not_reattached();
+  test_handoff_after_reconciled_exit();
+  test_shutdown_with_observed_exit();
+  test_unknown_identity();
+  test_pid_reuse_relaunch();
   test_error_history_parser();
   test_classification_rules();
   test_param_firmware();
