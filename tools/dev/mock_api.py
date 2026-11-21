@@ -241,6 +241,10 @@ def initial_state(scenario: str) -> dict:
             "update_emulators": True, "fakelib_default_mode": "full", "auto_update_ampr": False,
             "auto_remove_missing_games": False, "auto_remove_missing_delay_seconds": 300,
             "fan_target_temperature": 0,
+            "compat_kraken_api": True, "compat_kraken_api_port": 8097, "kraken_auto_mount": True,
+            "kraken_inject_ampr": True, "diagnostics_enabled": True,
+            "diagnostics_running_confirm_seconds": 20, "diagnostics_error_window_seconds": 120,
+            "api_allow_launch": True,
         },
         "smb": [{"name": "NAS", "path": "smb://nas.home.example/homebrew", "username": "", "active": True,
                  "read_only": False, "password_set": False}] if scenario != "empty" else [],
@@ -571,7 +575,7 @@ def handle_api(route: str, body: dict):
         if legacy:
             return {"api_version": 1, "shadowmount_version": "1.7", "capabilities": caps}
         return {"api_version": 1, "shadowmount_version": "1.7", "product": "UniMount", "unimount_version": "0.1.0",
-                "kraken_mount_version": "0.3.1", "kraken_mount_revision": "e1e7845", "capabilities": caps + ["ownership"]}
+                "kraken_mount_version": "0.3.1", "kraken_mount_revision": "e1e7845", "capabilities": caps + ["ownership", "settings_unimount"]}
     if route == "/games":
         return list_games(body)
     if route == "/games/info":

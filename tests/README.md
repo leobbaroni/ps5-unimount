@@ -21,7 +21,11 @@ automatic-mount failure ledger and decisions (a user cancel is remembered,
 other cancels are retried), and AMPR-emu-NG selection and
 replacement rules. The runtime config test also checks the `[compat]` and
 `[kraken]` settings and `[api] allow_launch` (default, on/off, invalid value,
-legacy `api_allow_launch` migration).
+legacy `api_allow_launch` migration), and the settings-API write path for the
+eight UniMount keys: each lands in its own section at both range ends, subsets
+leave other keys alone, comments and unrelated keys survive, the per-use keys are
+published before the reload while `kraken_auto_mount` follows it, and
+out-of-range values fail with `EINVAL` leaving the file byte-identical.
 
 The game control test compiles `src/sm_game_control.c`. It covers key-art
 variant parsing and sizing (aspect-preserving fit, no upscaling, extreme

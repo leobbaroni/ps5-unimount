@@ -454,6 +454,144 @@ static void test_unimount_settings(void) {
   puts("unimount settings: [compat] and [kraken] defaults, values and validation passed");
 }
 
+static bool write_unimount(const sm_config_unimount_settings_t *u) {
+  return sm_config_write_web_settings_ex(false, false, true, false, false, 300,
+      true, 0, NULL, 0, SM_FAKELIB_FULL, u);
+}
+
+static void assert_ini(const sm_ini_t *doc, const char *section, const char *key,
+                       const char *expected) {
+  const char *value = sm_ini_get(doc, section, key);
+  assert(value && !strcmp(value, expected));
+}
+
+static void test_unimount_settings_write(void) {
+  const char *initial = "# top comment\n[config]\nversion=2\n"
+      "[compat] # compat header comment\nkraken_api_port = 18097 # port comment\n"
+      "[custom]\nuntouched = value # custom comment\n";
+  put_file(CONFIG_FILE, initial);
+  put_file(PROFILES_FILE, "[config]\nversion=2\n");
+  assert(load_runtime_config());
+
+  // A subset leaves the other UniMount keys, comments and unrelated keys alone.
+  sm_config_unimount_settings_t u = {.has_api_allow_launch = true, .api_allow_launch = false};
+  assert(write_unimount(&u));
+  char *data = get_file(CONFIG_FILE);
+  assert(strstr(data, "# top comment") && strstr(data, "# compat header comment") &&
+         strstr(data, "kraken_api_port = 18097 # port comment") &&
+         strstr(data, "untouched = value # custom comment"));
+  assert(!strstr(data, "[diagnostics]") && !strstr(data, "[kraken]"));
+  free(data);
+  sm_ini_t doc = {0};
+  assert(sm_ini_read(CONFIG_FILE, &doc, false));
+  assert_ini(&doc, "api", "allow_launch", "off");
+  assert(!sm_ini_get(&doc, "compat", "kraken_api"));
+  sm_ini_free(&doc);
+  // Read on every use: visible before the scanner reload.
+  assert(!runtime_config().api_allow_launch);
+
+  // Every key, at non-default values, lands in its own section.
+  u = (sm_config_unimount_settings_t){
+      .has_compat_kraken_api = true, .compat_kraken_api = false,
+      .has_compat_kraken_api_port = true, .compat_kraken_api_port = 65535u,
+      .has_kraken_auto_mount = true, .kraken_auto_mount = false,
+      .has_kraken_inject_ampr = true, .kraken_inject_ampr = false,
+      .has_diagnostics_enabled = true, .diagnostics_enabled = false,
+      .has_diagnostics_running_confirm_seconds = true,
+      .diagnostics_running_confirm_seconds = 600u,
+      .has_diagnostics_error_window_seconds = true,
+      .diagnostics_error_window_seconds = 10u,
+      .has_api_allow_launch = true, .api_allow_launch = true};
+  assert(write_unimount(&u));
+  assert(sm_ini_read(CONFIG_FILE, &doc, false));
+  assert_ini(&doc, "compat", "kraken_api", "off");
+  assert_ini(&doc, "compat", "kraken_api_port", "65535");
+  assert_ini(&doc, "kraken", "auto_mount", "off");
+  assert_ini(&doc, "kraken", "inject_ampr", "off");
+  assert_ini(&doc, "diagnostics", "enabled", "off");
+  assert_ini(&doc, "diagnostics", "running_confirm_seconds", "600");
+  assert_ini(&doc, "diagnostics", "error_window_seconds", "10");
+  assert_ini(&doc, "api", "allow_launch", "on");
+  assert_ini(&doc, "custom", "untouched", "value");
+  assert(!sm_ini_get(&doc, "general", "kraken_api") && !sm_ini_get(&doc, "api", "auto_mount"));
+  sm_ini_free(&doc);
+  data = get_file(CONFIG_FILE);
+  assert(strstr(data, "# top comment") && strstr(data, "# compat header comment") &&
+         strstr(data, "# port comment") && strstr(data, "untouched = value # custom comment"));
+  free(data);
+
+  runtime_config_t cfg = runtime_config();
+  assert(!cfg.compat_kraken_api_enabled && cfg.compat_kraken_api_port == 65535u);
+  assert(!cfg.kraken_inject_ampr_enabled && !cfg.diagnostics_enabled);
+  assert(cfg.diagnostics_running_confirm_seconds == 600u &&
+         cfg.diagnostics_error_window_seconds == 10u && cfg.api_allow_launch);
+  // kraken_auto_mount waits for the scanner reload, which then rescans.
+  assert(cfg.kraken_auto_mount_enabled);
+  bool changed = false;
+  assert(reload_runtime_config_if_changed(&changed) && changed);
+  assert(!runtime_config().kraken_auto_mount_enabled);
+  assert(load_runtime_config());
+  cfg = runtime_config();
+  assert(!cfg.compat_kraken_api_enabled && cfg.compat_kraken_api_port == 65535u &&
+         !cfg.kraken_auto_mount_enabled && !cfg.kraken_inject_ampr_enabled &&
+         !cfg.diagnostics_enabled && cfg.diagnostics_running_confirm_seconds == 600u &&
+         cfg.diagnostics_error_window_seconds == 10u && cfg.api_allow_launch);
+
+  // The other range ends and the "on" spelling round-trip too.
+  u = (sm_config_unimount_settings_t){
+      .has_compat_kraken_api = true, .compat_kraken_api = true,
+      .has_compat_kraken_api_port = true, .compat_kraken_api_port = 1u,
+      .has_kraken_auto_mount = true, .kraken_auto_mount = true,
+      .has_kraken_inject_ampr = true, .kraken_inject_ampr = true,
+      .has_diagnostics_enabled = true, .diagnostics_enabled = true,
+      .has_diagnostics_running_confirm_seconds = true,
+      .diagnostics_running_confirm_seconds = 5u,
+      .has_diagnostics_error_window_seconds = true,
+      .diagnostics_error_window_seconds = 3600u};
+  assert(write_unimount(&u) && load_runtime_config());
+  cfg = runtime_config();
+  assert(cfg.compat_kraken_api_enabled && cfg.compat_kraken_api_port == 1u &&
+         cfg.kraken_auto_mount_enabled && cfg.kraken_inject_ampr_enabled &&
+         cfg.diagnostics_enabled && cfg.diagnostics_running_confirm_seconds == 5u &&
+         cfg.diagnostics_error_window_seconds == 3600u && cfg.api_allow_launch);
+
+  // Out-of-range values are rejected before anything is written or published.
+  char *before = get_file(CONFIG_FILE);
+  const sm_config_unimount_settings_t invalid[] = {
+      {.has_compat_kraken_api_port = true, .compat_kraken_api_port = 0u},
+      {.has_compat_kraken_api_port = true, .compat_kraken_api_port = 65536u},
+      {.has_diagnostics_running_confirm_seconds = true, .diagnostics_running_confirm_seconds = 4u},
+      {.has_diagnostics_running_confirm_seconds = true, .diagnostics_running_confirm_seconds = 601u},
+      {.has_diagnostics_error_window_seconds = true, .diagnostics_error_window_seconds = 9u},
+      {.has_diagnostics_error_window_seconds = true, .diagnostics_error_window_seconds = 3601u},
+      // A valid key next to an invalid one is not written either.
+      {.has_api_allow_launch = true, .api_allow_launch = false,
+       .has_compat_kraken_api_port = true, .compat_kraken_api_port = 0u},
+  };
+  for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+    errno = 0;
+    assert(!write_unimount(&invalid[i]) && errno == EINVAL);
+    data = get_file(CONFIG_FILE);
+    assert(!strcmp(data, before));
+    free(data);
+    cfg = runtime_config();
+    assert(cfg.compat_kraken_api_port == 1u && cfg.api_allow_launch &&
+           cfg.diagnostics_running_confirm_seconds == 5u &&
+           cfg.diagnostics_error_window_seconds == 3600u);
+  }
+  free(before);
+
+  // Without UniMount settings the existing write leaves those keys untouched.
+  assert(sm_config_write_web_settings(false, false, true, false, false, 300,
+      true, 0, NULL, 0, SM_FAKELIB_FULL));
+  assert(sm_ini_read(CONFIG_FILE, &doc, false));
+  assert_ini(&doc, "compat", "kraken_api_port", "1");
+  assert_ini(&doc, "diagnostics", "error_window_seconds", "3600");
+  sm_ini_free(&doc);
+  reset_files();
+  puts("unimount settings write: sections, comments, subsets, publication and rejection passed");
+}
+
 int main(void) {
   char directory[] = "/tmp/shadowmount-config-test-XXXXXX";
   assert(mkdtemp(directory));
@@ -472,6 +610,7 @@ int main(void) {
   test_concurrent_writers();
   test_logging_flags();
   test_unimount_settings();
+  test_unimount_settings_write();
   test_diagnostics_config();
   test_api_allow_launch_config();
   write_config(1);

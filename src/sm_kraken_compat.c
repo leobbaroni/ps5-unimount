@@ -460,10 +460,17 @@ static void *compat_thread_main(void *unused) {
   unsigned bound_port = 0;
   int last_error = 0;
   uint64_t next_bind_us = 0;
+  unsigned retry_port = 0;
   while (!atomic_load(&g_compat_stop) && !should_stop_requested()) {
     runtime_config_t cfg = runtime_config();
     unsigned port = cfg.compat_kraken_api_port;
     bool want = cfg.compat_kraken_api_enabled && !runtime_sleep_mode_active();
+    // A new port or a re-enable binds at once instead of after the retry delay.
+    if (!want || port != retry_port) {
+      next_bind_us = 0;
+      last_error = 0;
+      retry_port = port;
+    }
     if (listen_fd >= 0 && (!want || port != bound_port)) {
       close(listen_fd);
       listen_fd = -1;

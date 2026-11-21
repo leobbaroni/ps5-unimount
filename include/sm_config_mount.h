@@ -32,6 +32,40 @@ bool sm_config_write_web_settings(bool debug_enabled, bool quiet_mode,
                                   const char *const *scan_paths,
                                   size_t scan_path_count,
                                   sm_fakelib_mode_t fakelib_default_mode);
+// UniMount settings optionally written with the web settings. Only fields whose
+// has_* flag is set change; the others keep their config.ini value.
+typedef struct {
+  bool has_compat_kraken_api;
+  bool compat_kraken_api;
+  bool has_compat_kraken_api_port;
+  uint32_t compat_kraken_api_port;
+  bool has_kraken_auto_mount;
+  bool kraken_auto_mount;
+  bool has_kraken_inject_ampr;
+  bool kraken_inject_ampr;
+  bool has_diagnostics_enabled;
+  bool diagnostics_enabled;
+  bool has_diagnostics_running_confirm_seconds;
+  uint32_t diagnostics_running_confirm_seconds;
+  bool has_diagnostics_error_window_seconds;
+  uint32_t diagnostics_error_window_seconds;
+  bool has_api_allow_launch;
+  bool api_allow_launch;
+} sm_config_unimount_settings_t;
+// Same as sm_config_write_web_settings, plus the UniMount settings in one atomic
+// write. Settings read on every use (all but kraken_auto_mount) are published
+// immediately; kraken_auto_mount follows the scanner reload, which rescans.
+bool sm_config_write_web_settings_ex(bool debug_enabled, bool quiet_mode,
+                                     bool update_emulators_enabled,
+                                     bool auto_update_ampr_enabled,
+                                     bool auto_remove_missing_games,
+                                     uint32_t auto_remove_missing_delay_seconds,
+                                     bool allow_lan_access,
+                                     uint32_t fan_target_temperature_c,
+                                     const char *const *scan_paths,
+                                     size_t scan_path_count,
+                                     sm_fakelib_mode_t fakelib_default_mode,
+                                     const sm_config_unimount_settings_t *unimount);
 // Return a coherent caller-owned copy of the current runtime configuration.
 runtime_config_t runtime_config(void);
 // Hot-path flags: avoid copying the full configuration and rule tables.
