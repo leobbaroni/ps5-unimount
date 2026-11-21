@@ -4,9 +4,11 @@ Host regression tests (Linux/WSL; no console connection):
 python3 tools/test_runtime_config.py --sanitize
 python3 tools/test_shellcore.py --sanitize
 python3 tools/test_scan_permissions.py
+python3 tools/test_exec_permissions.py
 python3 tools/test_shellcore_launch.py --sanitize
 python3 tools/test_sandbox_cleanup.py
 python3 tools/test_unimount_logic.py --sanitize
+python3 tools/test_diag.py --sanitize
 ```
 
 The UniMount logic test compiles `src/sm_unimount_logic.c` with the host
@@ -28,3 +30,14 @@ If ASan cannot initialize under WSL, prefix either Python command with
 
 The scan permission test checks inaccessible roots and descendants in watcher
 discovery while keeping content scans and real I/O failures strict.
+
+The exec permission test checks that game executables gain only their missing
+execute bits, and that directories and symlink targets are left unchanged.
+
+The diagnostics test compiles `src/sm_diag_core.c` with json-c. It covers the
+launch timeline and outcomes (no `running` without a confirmed process, early
+exit, `LAUNCH_FAILED`, handoff, crash, persistence round trip), the console
+error-history parser on real samples (BOM, signed codes to hex), every
+classification rule plus an unknown code, `param.json` firmware comparison,
+PS5 Payload Manager autoload/meta parsing, kernel-log line selection and the
+AMPR runtime version marker of the bundled runtime.

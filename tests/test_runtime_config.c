@@ -173,6 +173,29 @@ static void test_logging_flags(void) {
   assert(sm_config_library_sync_notification());
 }
 
+static void test_diagnostics_config(void) {
+  FILE *file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n", file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  runtime_config_t cfg = runtime_config();
+  assert(cfg.diagnostics_enabled);
+  assert(cfg.diagnostics_running_confirm_seconds == 20u);
+  assert(cfg.diagnostics_error_window_seconds == 120u);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[diagnostics]\nenabled=off\n"
+                       "running_confirm_seconds=45\nerror_window_seconds=300\n",
+                       file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  cfg = runtime_config();
+  assert(!cfg.diagnostics_enabled);
+  assert(cfg.diagnostics_running_confirm_seconds == 45u);
+  assert(cfg.diagnostics_error_window_seconds == 300u);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[diagnostics]\nrunning_confirm_seconds=1\n",
+                       file) >= 0);
+  assert(!fclose(file) && !load_runtime_config());
+}
+
 static void put_file(const char *path, const char *text) {
   FILE *f = fopen(path, "w");
   assert(f && fputs(text, f) >= 0 && fclose(f) == 0);
@@ -415,6 +438,7 @@ int main(void) {
   test_concurrent_writers();
   test_logging_flags();
   test_unimount_settings();
+  test_diagnostics_config();
   write_config(1);
   assert(load_runtime_config());
   runtime_config_t retained = runtime_config();

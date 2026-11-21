@@ -61,6 +61,10 @@ device.
 | `/api/v1/settings/update` | `{"debug":true,"quiet_mode":false,"update_emulators":true,"fakelib_default_mode":"full","auto_update_ampr":false,"auto_remove_missing_games":false,"auto_remove_missing_delay_seconds":300,"allow_lan_access":true,"fan_target_temperature":0,"scan_paths":["/mnt/usb0/games"]}` | Update the API-managed part of `config.ini` |
 | `/api/v1/debug-log` | `{"max_bytes":131072}` | Read a bounded tail of `debug.log` |
 | `/api/v1/kernel-log` | `{"max_bytes":131072}` | Read a bounded tail of the kernel log |
+| `/api/v1/system` | GET | Firmware, ShellCore hooks/registration path, kstuff, mounting mechanisms and derived limitations |
+| `/api/v1/diagnostics/launches?title_id=PPSA12345&limit=20` | GET | Observed launch records, newest first (both query parameters optional) |
+| `/api/v1/diagnostics/launches/<id>` | GET | One launch record |
+| `/api/v1/diagnostics/errors?limit=20` | GET | The console's own error history, newest first |
 | `/api/v1/games` | `{"include_size":false}` | Detailed game snapshot; optional physical source-size calculation |
 | `/api/v1/games/info` | `{"title_id":"PPSA12345"}` | Detailed installed-game and source information for one game; size is always calculated |
 | `/api/v1/games/fakelib` | `{"title_id":"PPSA12345","mode":"emulators"}` | Persist the PS5 game's fakelib policy for its next launch |
@@ -295,6 +299,11 @@ install timestamps, game `version`, relative `icon_url`, app.db size, and runtim
 or an empty string when absent. It respects configured roots, the internal
 fallback and title-prefix matching. This reports presence independently of
 fakelib policy or whether an overlay is currently mounted.
+
+Every game item also contains `last_launch`: `null` when no launch of the title
+was observed, otherwise `{"id", "outcome", "at", "short_error", "category"}`
+from the newest launch record (see [Launch diagnostics](#launch-diagnostics)).
+A title that was only mounted or registered has `last_launch: null`.
 
 Icon requests without `size` return the original PNG. `size=thumb` returns a
 PNG capped at 128 pixels. `size=card` and `size=cover` are capped at 256 and 512
@@ -803,3 +812,72 @@ Package list and queue entries also include `sdk_version`, an unsigned packed
 SDK value (for example `0x07508000` displays as `SDK 7.50`), or zero if unavailable.
 A zero or missing value remains unknown and never prevents installation.
 Minimum firmware requirements are separate fields.
+
+## Launch diagnostics
+
+These read-only `GET` routes return JSON with `status=0`. They never delay,
+veto or change a launch. Stages, outcomes, categories and their limits are
+explained in [`unimount-diagnostics.md`](unimount-diagnostics.md).
+
+`GET /api/v1/system` returns:
+
+- `firmware`: `display` (for example `"13.60"`), `raw` (the
+  `kernel_get_fw_version()` value) and `raw_hex`.
+- `shellcore`: `offsets_available` / `offsets_firmware` for the SceShellCore
+  offset table, `install_bridge_firmware` (firmware 12.00+), `hooks`
+  (`installed`, `state` = `not_installed|installed|stale|rollback_pending|busy`,
+  `hook_count`, `install_hook`) and `registration` (`path` =
+  `shellcore_bridge|direct_appinstutil|batch_install_all`, `available`
+  true/false/null, `reason`).
+- `kstuff`: `loaded` (measured with KEKCALL_CHECK) and the inferred
+  identification `implementation` (`kstuff-lite|kstuff|unknown`), `version`
+  and `version_source` (`pldmgr_meta` or `null`). `inferred` is always `true`;
+  `evidence` lists matching `kstuff*` processes and the PS5 Payload Manager
+  autoload entry and slot `meta.json` that were read. kstuff has no version
+  query, so `version` is only set from that metadata.
+- `mechanisms`: `{name, available, reason}` for `lvd`, `md`, `nullfs`,
+  `unionfs`, `pfs_images`, `kraken_pkg` (also `bridge_revision`,
+  `ampr_runtime` = `shared|bundled`, `ampr_runtime_path`,
+  `ampr_runtime_version`) and `per_title_registration` (also `path`).
+  `available` is `null` when it could not be determined.
+- `limitations`: `{code, severity, message}` derived from the above, with
+  `severity` = `error|warning|info`. Codes: `shellcore_offsets_missing`,
+  `shellcore_hooks_not_installed`, `kstuff_not_loaded`,
+  `registration_unavailable`, `native_debug_pkg_unavailable`,
+  `lvd_unavailable`, `md_unavailable`, `nullfs_unavailable`,
+  `unionfs_unavailable`.
+
+`GET /api/v1/diagnostics/launches` accepts `title_id` and `limit` (1..64,
+default 20) and returns `enabled`, `running_confirm_seconds`,
+`error_window_seconds` and `launches`, newest first.
+`GET /api/v1/diagnostics/launches/<id>` returns `{"status":0,"launch":{...}}`,
+or HTTP 404 with `ENOENT`. A launch record contains:
+
+- `id`, `title_id`, `managed`, `at`/`at_unix_ms`/`mono_us` (first event),
+  `outcome`, `observation_interrupted`, `short_error`, `launch_attempts`.
+- `stages`: `mounted`, `registered`, `launch_requested`, `sandbox_ready`,
+  `process_started`, `running_confirmed`, `exited`, each
+  `{state, at, at_unix_ms, mono_us, detail}` with
+  `state` = `ok|failed|not_observed|pending`.
+- `mount` (`status`, `errno`, `error`, `layer`) or `null`; `process` (`pid`,
+  `app_id`, `started_at`, `exited_at`, `alive_seconds`) or `null`;
+  `environment` (`kstuff_loaded`, `shellcore_hooks_installed`,
+  `console_firmware`, `console_firmware_raw`, `required_firmware`,
+  `required_firmware_raw`); `overlay` (`captured`, `layers` with
+  `label`/`fstype`/`from`/`on`, `fakelib` with `source` and `files`).
+- `game_errors` (sm_mdbg findings), `kernel_log` (`kind`, `attributed`,
+  `text`) and `native_errors` (see below, with `attribution` =
+  `title_id|time_window`).
+- `diagnosis`: `null` for running, successful or pending launches, otherwise
+  `{category, confidence, rule, evidence, advice}` with `confidence` =
+  `observed|inferred`.
+- `timeline`: `{at, at_unix_ms, mono_us, event, detail}` entries.
+
+`GET /api/v1/diagnostics/errors` accepts `limit` (1..200, default 20) and
+reads `/system_data/priv/error/history/*.json` newest first (file mtime). It
+returns `directory`, `readable`, `read_error`, `total_files` and `errors`. Each
+error has `file`, `file_mtime`, `file_mtime_unix`, `parsed`, and when parsed
+`short_error`, `internal_error_code` (signed, as stored), `internal_error_code_hex`
+(for example `-2136342502` is `0x80AA001A`), `message`, `title_id`,
+`display_version`, `tick`, `app_id` and `category` (`null` for undocumented
+codes). Unreadable or garbled files are listed with `parsed=false`.

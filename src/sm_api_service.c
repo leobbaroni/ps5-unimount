@@ -13,6 +13,7 @@
 #include "sm_api_service.h"
 #include "sm_appdb.h"
 #include "sm_config_mount.h"
+#include "sm_diag.h"
 #include "sm_filesystem.h"
 #include "sm_game_cache.h"
 #include "sm_game_lifecycle.h"
@@ -1453,6 +1454,10 @@ static struct json_object *game_to_json(
   }
 
   if (library_entry && !add_game_content_summary(item, source->title_id, content_id, installed_pkg)) {
+    json_object_put(item);
+    return NULL;
+  }
+  if (!sm_diag_add_last_launch(item, source->title_id)) {
     json_object_put(item);
     return NULL;
   }
@@ -6402,6 +6407,23 @@ static enum MHD_Result finish_request_error(sm_http_request_t *request,
   return queued ? MHD_YES : MHD_NO;
 }
 
+// GET /api/v1/system and /api/v1/diagnostics/* (src/sm_diag.c).
+static bool handle_diagnostics_get(struct MHD_Connection *connection,
+                                   const char *url) {
+  const char *title_id = MHD_lookup_connection_value(
+      connection, MHD_GET_ARGUMENT_KIND, "title_id");
+  const char *limit = MHD_lookup_connection_value(
+      connection, MHD_GET_ARGUMENT_KIND, "limit");
+  int http_status = 200;
+  struct json_object *response =
+      sm_diag_api_response(url, title_id, limit, &http_status);
+  if (!response)
+    return send_out_of_memory_response(connection);
+  bool sent = send_json_object(connection, http_status, response);
+  json_object_put(response);
+  return sent;
+}
+
 static enum MHD_Result handle_http_request(
     void *cls, struct MHD_Connection *connection, const char *url,
     const char *method, const char *version, const char *upload_data,
@@ -6449,6 +6471,8 @@ static enum MHD_Result handle_http_request(
       queued = handle_package_icon(connection);
     else if (strcmp(url, SM_API_ROUTE_OWNERSHIP) == 0)
       queued = handle_ownership(connection);
+    else if (sm_diag_api_route(url))
+      queued = handle_diagnostics_get(connection, url);
     else
       queued = send_error_response(connection, 404, ENOENT,
                                    "unknown API route");

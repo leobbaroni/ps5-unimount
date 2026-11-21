@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "sm_diag.h"
 #include "sm_filesystem.h"
 #include "sm_fakelib.h"
 #include "sm_game_lifecycle.h"
@@ -446,23 +447,33 @@ static bool wait_for_resumed_runtime_source(const char *title_id,
   return resumed_runtime_source_ready(title_id, runtime_source);
 }
 
+// failed_layer (optional) names the step that failed, for launch diagnostics.
 static bool prepare_title_runtime(const char *title_id,
                                   const char *source_path,
-                                  const bool *mount_read_only_override) {
+                                  const bool *mount_read_only_override,
+                                  const char **failed_layer) {
+  const char *unused_layer;
+  if (!failed_layer)
+    failed_layer = &unused_layer;
   bool kraken = sm_kraken_is_cache(source_path);
+  *failed_layer = "kraken_source";
   if (kraken && !sm_kraken_source_ready(source_path))
     return false;
+  *failed_layer = "image";
   if (!prepare_image_source(title_id, source_path,
                             mount_read_only_override))
     return false;
   if (!kraken)
     sm_fakelib_prepare_title_cache(title_id, source_path);
   runtime_mount_state_lock();
+  *failed_layer = "title_nullfs";
   bool title_mounted = !runtime_sleep_mode_active() &&
                        mount_title_nullfs(title_id, source_path);
   bool ready = title_mounted;
-  if (ready && !kraken)
+  if (ready && !kraken) {
+    *failed_layer = "backport_overlay";
     ready = mount_backport_overlay_for_title(source_path, title_id, NULL, NULL);
+  }
   if (title_mounted && !ready)
     (void)unmount_title_runtime_layers(title_id);
   runtime_mount_state_unlock();
@@ -500,31 +511,52 @@ static void cleanup_abandoned_launch(const char *next_title_id) {
   }
 }
 
+// Launch diagnostics: which step refused the launch mount and its errno.
+typedef struct {
+  const char *layer;
+  int native_errno;
+} launch_mount_failure_t;
+
 static int mount_managed_title_runtime(const char *title_id,
                                        bool allow_unmanaged,
                                        bool launch_request,
-                                       const bool *mount_read_only_override) {
+                                       const bool *mount_read_only_override,
+                                       launch_mount_failure_t *failure) {
+  launch_mount_failure_t unused_failure;
+  if (!failure)
+    failure = &unused_failure;
+  failure->layer = NULL;
+  failure->native_errno = 0;
   if (!is_supported_game_title_id(title_id))
     return EINVAL;
+  failure->layer = "sleep";
   if (runtime_sleep_mode_active())
     return EBUSY;
 
   char source_path[MAX_PATH];
+  failure->layer = "mount_link";
   if (!read_mount_link(title_id, source_path, sizeof(source_path)))
     return allow_unmanaged ? 0 : ENOENT;
+  failure->layer = "read_only_override";
   if (mount_read_only_override && !is_under_image_mount_base(source_path))
     return ENOTSUP;
+  failure->layer = "source_resume";
   if (!wait_for_resumed_runtime_source(title_id, source_path))
     return EIO;
   bool kraken = sm_kraken_is_cache(source_path);
-  if (kraken && !sm_kraken_source_ready(source_path))
+  failure->layer = "kraken_source";
+  if (kraken && !sm_kraken_source_ready(source_path)) {
+    failure->native_errno = errno;
     return errno ? errno : EIO;
+  }
 
   bool claimed = false;
+  failure->layer = "claim";
   int claim_status =
       claim_prepared_title(title_id, launch_request, &claimed);
   if (claim_status != 0)
     return claim_status;
+  failure->layer = NULL;
   if (!claimed && is_data_mounted(title_id) &&
       !mount_read_only_override) {
     if (launch_request && !kraken)
@@ -535,11 +567,13 @@ static int mount_managed_title_runtime(const char *title_id,
 
   errno = 0;
   if (prepare_title_runtime(title_id, source_path,
-                            mount_read_only_override)) {
+                            mount_read_only_override, &failure->layer)) {
+    failure->layer = NULL;
     finish_prepared_title(title_id, false);
     return 0;
   }
   int prepare_errno = errno;
+  failure->native_errno = prepare_errno;
   if (claimed)
     rollback_prepared_title(title_id);
   else
@@ -552,7 +586,7 @@ static int mount_managed_title_runtime(const char *title_id,
 }
 
 bool sm_shellcore_ensure_title_runtime(const char *title_id) {
-  return mount_managed_title_runtime(title_id, true, true, NULL) == 0;
+  return mount_managed_title_runtime(title_id, true, true, NULL, NULL) == 0;
 }
 
 static int handle_launch_request(const char *title_id) {
@@ -574,7 +608,11 @@ static int handle_launch_request(const char *title_id) {
   if (is_supported_game_title_id(title_id) && !runtime_sleep_mode_active())
     cleanup_abandoned_launch(title_id);
 
-  int status = mount_managed_title_runtime(title_id, false, true, NULL);
+  launch_mount_failure_t failure;
+  int status = mount_managed_title_runtime(title_id, false, true, NULL,
+                                           &failure);
+  // Observation only: queues the result for the diagnostics thread.
+  sm_diag_note_launch(title_id, status, failure.native_errno, failure.layer);
   if (status != 0) {
     // A rejected managed request must not veto the old owner's exit cleanup.
     // Stock titles still need their pending identity for sandbox-ready.
@@ -624,7 +662,7 @@ int sm_shellcore_mount_title_runtime(
     return EINVAL;
   if (!sm_game_lifecycle_has_active_game())
     return mount_managed_title_runtime(title_id, false, false,
-                                       mount_read_only_override);
+                                       mount_read_only_override, NULL);
   if (!sm_shellcore_try_begin_external_mutation())
     return EBUSY;
 
@@ -643,7 +681,7 @@ int sm_shellcore_mount_title_runtime(
   else {
     errno = 0;
     if (!prepare_title_runtime(title_id, source_path,
-                                 mount_read_only_override))
+                                 mount_read_only_override, NULL))
       status = errno != 0 ? errno : EIO;
   }
   sm_shellcore_end_external_mutation();
@@ -1221,6 +1259,7 @@ static int handle_sandbox_ready_request(const char *title_id) {
     pthread_mutex_unlock(&g_service.mutex);
     log_debug("  [SHELLCORE] sandbox ready handled: %s",
               effective_title_id);
+    sm_diag_note_sandbox_ready(effective_title_id, package_status);
     if (package_ready)
       return 0;
     log_debug("  [SHELLCORE] package fallback unavailable: %s status=%d "
@@ -1232,6 +1271,7 @@ static int handle_sandbox_ready_request(const char *title_id) {
   int status = errno != 0 ? errno : EIO;
   log_debug("  [SHELLCORE] sandbox fakelib unavailable: %s status=%d (%s)",
             effective_title_id, status, strerror(status));
+  sm_diag_note_sandbox_ready(effective_title_id, status);
   return status;
 }
 
@@ -1257,6 +1297,7 @@ static void handle_client(int fd) {
     response.status = handle_launch_request(request.title_id);
   } else if (request.operation == SM_SHELLCORE_REQUEST_LAUNCH_FAILED) {
     response.status = handle_launch_failed_request(request.title_id);
+    sm_diag_note_launch_failed(request.title_id, response.status);
   } else if (request.operation == SM_SHELLCORE_REQUEST_SANDBOX_READY) {
     response.status = handle_sandbox_ready_request(request.title_id);
   } else {

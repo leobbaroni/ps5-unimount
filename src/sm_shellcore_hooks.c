@@ -1144,3 +1144,18 @@ bool sm_shellcore_install_title_dir(const char *title_id,
   *result_out = result;
   return true;
 }
+
+bool sm_shellcore_hooks_get_info(sm_shellcore_hooks_info_t *info) {
+  if (!info || pthread_mutex_trylock(&g_install_mutex) != 0)
+    return false;
+  static const char *const names[] = {"not_installed", "installed",
+                                      "rollback_pending", "stale"};
+  info->installed = g_hooks.enabled && g_hooks.status == SHELLCORE_HOOKS_READY;
+  info->state = (size_t)g_hooks.status < sizeof(names) / sizeof(names[0])
+                    ? names[g_hooks.status]
+                    : "unknown";
+  info->hook_count = g_hooks.hook_count;
+  info->install_hook = g_hooks.hook_count >= SHELLCORE_MAX_HOOK_COUNT;
+  pthread_mutex_unlock(&g_install_mutex);
+  return true;
+}

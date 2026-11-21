@@ -11,6 +11,10 @@ bool sm_install_register_title_dir(const char *title_id,
                                    const char *install_dir,
                                    int *result_out);
 
+// Whether the pre-12.00 direct sceAppInstUtilAppInstallTitleDir symbol
+// resolves (the same lookup sm_install_register_title_dir() uses).
+bool sm_install_direct_registration_available(void);
+
 // Stage and register one explicitly selected game using the regular TitleDir flow.
 // The caller owns the scanner and launch mutation guards.
 bool sm_install_mount_game(const char *source, const char *title_id,

@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <stdlib.h>
 
+#include "sm_diag.h"
+#include "sm_diag_core.h"
 #include "sm_limits.h"
 #include "sm_log.h"
 #include "sm_mdbg.h"
@@ -388,6 +390,12 @@ static void handle_game_failure(const char *reason, uint64_t now_us,
 
   log_debug("  [MDBG] game error: %s pid=%ld: %s", g_mdbg.game.title_id,
             (long)g_mdbg.game.pid, reason);
+  sm_diag_note_game_error(
+      g_mdbg.game.pid, g_mdbg.game.title_id,
+      kind == MDBG_FAILURE_RTLD           ? SM_DIAG_FINDING_RTLD
+      : kind == MDBG_FAILURE_FATAL_SIGNAL ? SM_DIAG_FINDING_FATAL
+                                          : SM_DIAG_FINDING_CRASH_FLAG,
+      reason);
   if (kind == MDBG_FAILURE_GENERIC)
     notify_system_info_l10n(SM_L10N_GAME_CRASHED, g_mdbg.game.title_id);
   else
