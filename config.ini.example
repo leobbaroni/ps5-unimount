@@ -73,7 +73,8 @@ version = 2
 # global_priority = game
 
 [emulators]
-# Replace matching cached game fakelib files from path; excludes fakelib2 and PKGs.
+# Replace matching cached fakelib files from path and use shared AMPR-emu-NG for Kraken PKGs.
+# A Kraken game uses the bundled runtime if no compatible shared module is available.
 # update_enabled = on
 # path = /data/shadowmount/emus
 # Check for AMPR 30 seconds after startup, then every four hours; defer during games.

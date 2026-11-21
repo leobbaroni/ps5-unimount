@@ -1205,6 +1205,7 @@
       <p class="confirm-message" id="confirmMessage"></p>
       <div class="modal-actions">
         <button class="btn" id="confirmCancel" type="button" data-cancel data-i18n="cancel">Cancel</button>
+        <button class="btn" id="confirmAlternative" type="button" hidden></button>
         <button class="btn danger" id="confirmAccept" type="button" data-i18n="continueAction">Continue</button>
       </div>
     </div>
@@ -1281,6 +1282,32 @@
           packageReplace: "Replace",
           browse: "Browse",
           packageUpdate: "Update",
+          krakenApplyPatch: "Mount with this update",
+          krakenRestoreBase: "Mount the base game",
+          krakenApplyConfirm: "Full checks every required base block. Fast checks the base blocks used to build the cache. A damaged block read while playing may only be detected then.\n\n{path}",
+          krakenFullVerify: "Full check",
+          krakenFastVerify: "Fast",
+          krakenRestoreConfirm: "Switch to the base package? The update file will be kept.",
+          krakenDetach: "Remove LIH",
+          krakenRelink: "Relink PKG",
+          krakenFindBase: "Find base PKG",
+          krakenFindBaseHint: "Open the folder with the moved base PKG and press U next to the game.",
+          krakenRelinkConfirm: "Use this file as the source for the registered game?\n\n{path}",
+          krakenRelinkPatchConfirm: "Relink the game and keep its LIH update, or relink with the base version.\n\n{path}",
+          krakenPatchSourceMissing: "The applied LIH file is unavailable. Restore its original path, or press U on the base PKG and choose Remove LIH.",
+          krakenPatchApplied: "Update applied",
+          krakenPatchInvalid: "Could not apply this LIH update. Check that it matches the original base PKG and see the debug log.",
+          krakenDecodeFailed: "Could not decode a Kraken block. See the debug log for the file and block details.",
+          krakenBaseMissing: "Mount the matching base PKG with U first.",
+          krakenBaseInvalid: "Could not mount the base PKG. See the debug log.",
+          krakenTitleConflict: "The title already has another source.",
+          krakenUseMount: "Use U for a compatible LIH update on a mounted PKG. System installation requires an installed base.",
+          krakenSourcesChanged: "A source PKG changed during the operation. Check the files and try again.",
+          krakenUnsupportedPatch: "This LIH cannot be applied to the current mounted PKG.",
+          krakenCheckPatch: "Checking the update",
+          krakenCheckBase: "Checking the base PKG",
+          krakenBuildCache: "Preparing the game files",
+          krakenCheckLayout: "Checking Kraken block boundaries",
           packageNoBase: "No base game",
           packageEnqueue: "Add to queue",
           packageQueued: "Queued",
@@ -1312,6 +1339,7 @@
           packageEmpty: "No PKG files or folders here",
           packageInvalid: "Invalid or unsupported PKG",
           packageInstall: "Install",
+          packageMount: "Mount .pkg",
           packageConfirm: "Install {title} ({kind})?\n{path}",
           packageBase: "Game",
           packageTruncated: "Only the first 256 entries are shown. Open a subfolder.",
@@ -1324,6 +1352,7 @@
           fakelibMode: "Fakelib mounting",
           changeFakelibMode: "Select to cycle modes",
           ignoreGlobalFakelib: "Ignore global fakelib",
+          usePlaygoStub: "Use bundled PlayGo stub",
           fakelibDefaultMode: "Default fakelib mode",
           fakelibDefault: "Default ({mode})",
           fakelibFull: "Full",
@@ -1586,6 +1615,32 @@
           packageReplace: "Заменить",
           browse: "Обзор папок",
           packageUpdate: "Обновить",
+          krakenApplyPatch: "Смонтировать с этим обновлением",
+          krakenRestoreBase: "Смонтировать базовую версию",
+          krakenApplyConfirm: "Полная проверка охватывает все нужные блоки базы. Быстрая проверяет блоки, которые SMP читает при сборке. Ошибка в остальных блоках может проявиться при запуске или в игре.\n\n{path}",
+          krakenFullVerify: "Полная проверка",
+          krakenFastVerify: "Быстро",
+          krakenRestoreConfirm: "Вернуться к базовому пакету? Файл обновления сохранится.",
+          krakenDetach: "Снять LIH",
+          krakenRelink: "Перепривязать PKG",
+          krakenFindBase: "Указать базовый PKG",
+          krakenFindBaseHint: "Откройте папку с перенесённым базовым PKG и нажмите U рядом с игрой.",
+          krakenRelinkConfirm: "Использовать этот файл для уже зарегистрированной игры?\n\n{path}",
+          krakenRelinkPatchConfirm: "Перепривязать игру с сохранением LIH или вернуться к базовой версии.\n\n{path}",
+          krakenPatchSourceMissing: "Файл применённого LIH недоступен. Верните его на прежнее место или нажмите U на базовом PKG и выберите «Снять LIH».",
+          krakenPatchApplied: "Обновление применено",
+          krakenPatchInvalid: "Не удалось применить LIH-патч. Проверьте, подходит ли он к исходному базовому PKG, и откройте журнал отладки.",
+          krakenDecodeFailed: "Не удалось распаковать блок Kraken. Имя файла и параметры блока есть в журнале отладки.",
+          krakenBaseMissing: "Сначала смонтируйте подходящий базовый PKG кнопкой U.",
+          krakenBaseInvalid: "Не удалось смонтировать базовый PKG. Подробности в журнале отладки.",
+          krakenTitleConflict: "У игры уже зарегистрирован другой источник.",
+          krakenUseMount: "Для совместимого LIH-патча смонтированного PKG используйте U. Для системной установки нужна установленная база.",
+          krakenSourcesChanged: "Один из PKG изменился во время операции. Проверьте файлы и повторите попытку.",
+          krakenUnsupportedPatch: "Этот LIH-патч нельзя применить к смонтированному PKG.",
+          krakenCheckPatch: "Проверка обновления",
+          krakenCheckBase: "Проверка базового PKG",
+          krakenBuildCache: "Подготовка файлов игры",
+          krakenCheckLayout: "Проверка границ блоков Kraken",
           packageNoBase: "Нет игры",
           packageEnqueue: "В очередь",
           packageQueued: "В очереди",
@@ -1617,6 +1672,7 @@
           packageEmpty: "Здесь нет файлов PKG или папок",
           packageInvalid: "Повреждённый или неподдерживаемый PKG",
           packageInstall: "Установить",
+          packageMount: "Смонтировать .pkg",
           packageConfirm: "Установить {title} ({kind})?\n{path}",
           packageBase: "Игра",
           packageTruncated: "Показаны первые 256 элементов. Откройте вложенную папку.",
@@ -1629,6 +1685,7 @@
           fakelibMode: "Монтирование fakelib",
           changeFakelibMode: "Нажмите для смены режима",
           ignoreGlobalFakelib: "Игнорировать глобальный fakelib",
+          usePlaygoStub: "Использовать встроенную заглушку PlayGo",
           fakelibDefaultMode: "Режим fakelib по умолчанию",
           fakelibDefault: "По умолчанию ({mode})",
           fakelibFull: "Полное",
@@ -3198,7 +3255,11 @@
         storage_busy: "busyStorage",
         storage_unavailable: "busyStorageUnavailable",
         pkg_invalid: "packageInvalid", pkg_base_missing: "packageBaseMissing", pkg_already_installed: "packageInstalled", pkg_queued: "packageQueued", pkg_queue_full: "packageQueueFull",
-        pkg_stream_lost: "packageStreamLost", pkg_source_changed: "sourceUnavailable"
+        pkg_stream_lost: "packageStreamLost", pkg_source_changed: "sourceUnavailable",
+        kraken_patch_invalid: "krakenPatchInvalid", kraken_decode_failed: "krakenDecodeFailed", kraken_base_missing: "krakenBaseMissing",
+        kraken_patch_source_missing: "krakenPatchSourceMissing",
+        kraken_base_invalid: "krakenBaseInvalid", kraken_title_conflict: "krakenTitleConflict",
+        kraken_use_mount: "krakenUseMount", kraken_sources_changed: "krakenSourcesChanged"
       };
 
       function operationErrorMessage(reason, fallback, details = {}) {
@@ -3426,6 +3487,8 @@
       }
 
       function storageJobStateLabel(job) {
+        if (job.operation === "mount_package" && job.state === "transferring")
+          return t(["krakenCheckPatch", "krakenCheckBase", "krakenBuildCache", "krakenCheckLayout"][job.kraken_phase] || "krakenBuildCache");
         const labels = {
           installing: t("jobInstalling"),
           idle: t("jobIdle"),
@@ -3442,6 +3505,7 @@
       }
 
       function storageOperationLabel(operation, sourceType) {
+        if (operation === "mount_package") return t("packageMount");
         if (sourceType === "backport" && operation !== "delete") return t("operationInstall");
         if (operation === "eject") return t("ejectStorage");
         if (operation === "install") return t("operationInstall");
@@ -4385,6 +4449,17 @@
           }
           sidebar.append(policy);
         }
+        if (typeof game.playgo_stub_enabled === "boolean") {
+          const policy = node("section", "fakelib-controls");
+          const playgo = actionButton("", () =>
+            setGameFakelib(game, playgo, { playgo_stub_enabled: !game.playgo_stub_enabled }), "fakelib-switch");
+          playgo.setAttribute("role", "switch");
+          playgo.setAttribute("aria-checked", String(game.playgo_stub_enabled));
+          playgo.disabled = Boolean(state.fakelibSaving);
+          playgo.append(node("span", "switch-label", t("usePlaygoStub")), node("span", "switch-track"));
+          policy.append(playgo, node("p", "subtle fakelib-hint", t("fakelibNextLaunch")));
+          sidebar.append(policy);
+        }
         details.append(content);
 
         const actions = $("modalActions");
@@ -4392,6 +4467,21 @@
         const runtimeAction = appendRuntimeActions(actions, game);
         if (runtimeAction) runtimeAction.className += " primary";
         const destructive = [];
+        if (game.source_type === "pkg" && !game.installed_pkg) {
+          if (!game.source_available) {
+            actions.append(actionButton(t("krakenFindBase"), () => {
+              closeModal();
+              switchView("packages");
+              toast(t("krakenFindBaseHint"));
+            }));
+          } else if (game.kraken_patch_applied) {
+            const detach = actionButton(t("krakenDetach"),
+              () => mountPackage({ path: game.path, kraken_restore_base: true }),
+              "danger content-delete");
+            detach.disabled = Boolean(state.storageJob?.active);
+            destructive.push(detach);
+          }
+        }
         if (game.patch_info_status === 0 && game.patch?.installed) {
           destructive.push(actionButton(t("deletePatch"), () => uninstallContent(game), "danger content-delete"));
         }
@@ -4739,6 +4829,9 @@
             fakelib_effective_enabled: result.fakelib_effective_enabled,
             ignore_global_fakelib: result.ignore_global_fakelib
           };
+          if (typeof result.playgo_stub_enabled === "boolean") {
+            policy.playgo_stub_enabled = result.playgo_stub_enabled;
+          }
           Object.assign(game, policy);
           for (const listed of state.games) {
             if (listed.title_id === game.title_id) Object.assign(listed, policy);
@@ -4809,9 +4902,12 @@
         await startStorageJob(game, "delete", { title_id: game.title_id, confirm: true });
       }
 
-      function confirmAction(message) {
+      function confirmAction(message, acceptLabel = t("continueAction"), alternativeLabel = "") {
         if (confirmResolve) return Promise.resolve(false);
         $("confirmMessage").textContent = message;
+        $("confirmAccept").textContent = acceptLabel;
+        $("confirmAlternative").textContent = alternativeLabel;
+        $("confirmAlternative").hidden = !alternativeLabel;
         $("confirmModal").hidden = false;
         return new Promise(resolve => { confirmResolve = resolve; });
       }
@@ -5001,10 +5097,12 @@
             Boolean(state.storageJob?.active && state.storageJob.source === entry.path);
           const install = row.querySelector(".package-install"), add = row.querySelector(".package-enqueue");
           install.textContent = t(installed ? "packageInstalled" : missing ? "packageNoBase" : entry.kind === "base" && entry.base_installed ? "packageReplace" : entry.kind === "patch" ? "packageUpdate" : "packageInstall");
-          install.disabled = !entry.installable || installed || missing || queued || state.browserBatchRunning || state.packageQueueLoading || Boolean(state.storageJob?.active);
+          install.disabled = entry.kraken_only || !entry.installable || installed || missing || queued || state.browserBatchRunning || state.packageQueueLoading || Boolean(state.storageJob?.active);
           add.textContent = t(queued ? "packageQueued" : "packageEnqueue");
-          add.disabled = !entry.installable || installed || queued || (missing && !baseQueued && !(!state.packageQueue && entry.base_queued)) || queue.length >= 32 || state.packageQueueLoading || state.browserBatchRunning ||
+          add.disabled = entry.kraken_only || !entry.installable || installed || queued || (missing && !baseQueued && !(!state.packageQueue && entry.base_queued)) || queue.length >= 32 || state.packageQueueLoading || state.browserBatchRunning ||
             Boolean(state.storageJob?.active && state.storageJob.operation === "delete" && !state.storageJob.title_id);
+          const mount = row.querySelector(".package-mount");
+          if (mount) mount.disabled = installed || queued || state.browserBatchRunning || Boolean(state.storageJob?.active);
         });
         $("packageList").querySelectorAll(".backport-install").forEach(button => {
           button.disabled = button.dataset.selfSource === "true" || Boolean(state.storageJob?.active);
@@ -5302,6 +5400,9 @@
             ? `${packageKind(entry.kind)} · ${entry.title_id} · ${entry.version || "—"} · SDK ${packageSdkVersion(entry.sdk_version)} · ${formatBytes(entry.size_bytes)}`
             : `${t("packageInvalid")} · ${formatBytes(entry.size_bytes)}`;
           info.append(node("p", "subtle", metadata), node("p", "subtle", entry.name));
+          if (entry.kraken_patch_applied) info.append(node("p", "subtle", t("krakenPatchApplied")));
+          else if (entry.kraken_only && !entry.mount_patch)
+            info.append(node("p", "subtle", t("krakenUnsupportedPatch")));
           const install = actionButton(t("packageInstall"), () => installPackage(entry), "primary package-install");
           install.disabled = !entry.installable || Boolean(state.storageJob?.active);
           install.dataset.installable = String(Boolean(entry.installable));
@@ -5310,6 +5411,15 @@
           add.dataset.path = entry.path;
           const actions = node("div", "package-actions");
           actions.append(install, add);
+          if (entry.mountable) {
+            const mount = actionButton("U", () => mountPackage(entry), "package-mount");
+            const mountLabel = t(entry.mount_patch ? "krakenApplyPatch" :
+              entry.kraken_relink ? "krakenRelink" :
+              entry.kraken_restore_base ? "krakenRestoreBase" : "packageMount");
+            mount.setAttribute("aria-label", mountLabel);
+            mount.title = mountLabel;
+            actions.append(mount);
+          }
           appendSourceDelete(actions, entry);
           row.append(cover, info, actions);
           list.append(row);
@@ -5360,6 +5470,31 @@
         try {
           renderStorageJob(await api("/sources/delete", { path: entry.path, confirm: true }));
           scheduleStorageJobPoll();
+        } catch (error) { toast(errorMessage(error), true); }
+      }
+
+      async function mountPackage(entry) {
+        const request = { path: entry.path };
+        if (entry.mount_patch) {
+          const mode = await confirmAction(t("krakenApplyConfirm", request),
+            t("krakenFullVerify"), t("krakenFastVerify"));
+          if (!mode) return;
+          request.verification = mode === "alternative" ? "fast" : "full";
+        } else if (entry.kraken_relink) {
+          const mode = await confirmAction(t(entry.kraken_relink_patched ? "krakenRelinkPatchConfirm" : "krakenRelinkConfirm", request),
+            t("krakenRelink"), entry.kraken_relink_patched ? t("krakenDetach") : "");
+          if (!mode) return;
+          request.relink = mode === "alternative" ? "base_only" : "keep_patch";
+        } else if (entry.kraken_restore_base &&
+          !await confirmAction(t("krakenRestoreConfirm"), t("krakenDetach"))) {
+          return;
+        }
+        try {
+          const job = await api("/packages/mount", request);
+          if (!$("modal").hidden) closeModal();
+          renderStorageJob(job);
+          scheduleStorageJobPoll();
+          focusControl($("cancelTransfer"));
         } catch (error) { toast(errorMessage(error), true); }
       }
 
@@ -5969,6 +6104,7 @@
       ["libraryTab", "libraryHome"].forEach(id => $(id).addEventListener("click", () => switchView("library")));
       $("confirmCancel").addEventListener("click", () => finishConfirmation(false));
       $("confirmAccept").addEventListener("click", () => finishConfirmation(true));
+      $("confirmAlternative").addEventListener("click", () => finishConfirmation("alternative"));
       $("confirmModal").addEventListener("click", event => { if (event.target === $("confirmModal")) finishConfirmation(false); });
       $("consoleTab").addEventListener("click", () => switchView("console"));
       document.querySelectorAll("[data-console-section]").forEach(button => {

@@ -1,0 +1,3 @@
+# Preserve upstream line endings and the context lines of the vendor patch.
+vendor/kraken/LICENSE -text whitespace=cr-at-eol
+tools/kraken-index.patch -text whitespace=-blank-at-eol

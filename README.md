@@ -1,8 +1,8 @@
-# ShadowMountPlus (PS5)
+# ShadowMountPlus with Kraken Mount (PS5)
 
 **ShadowMountPlus** is an automated background game mounter and library manager for jailbroken PlayStation 5 consoles. It discovers and registers PS4/PS5 game folders and supported disk images on internal or external storage, then prepares them when launched. A built-in web interface provides library management, installation, file transfers, and configuration.
 
-**[Download releases](https://github.com/drakmor/ShadowMountPlus/releases)** · **[Discord community](https://discord.gg/x2Ppvzwjhm)** · **[Report an issue](https://github.com/drakmor/ShadowMountPlus/issues)**
+**[Upstream ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus)** · **[Kraken Mount](https://github.com/quer3q/kraken-mount)** · **[Discord community](https://discord.gg/x2Ppvzwjhm)**
 
 > [!WARNING]
 > Mounting disk images can cause shutdown issues or data corruption, particularly on older firmware. Back up important files and saves before testing. This project requires a jailbroken PS5 and is not intended for an unmodified console.
@@ -38,7 +38,7 @@ Please double-check the currency and network before sending a donation.
 ## Requirements
 
 - Jailbroken PlayStation 5 with **[kstuff-lite v1.07 or newer](https://github.com/EchoStretch/kstuff-lite)** (including supported firmware 2.00 configurations).
-- The latest compatible `shadowmountplus.elf` from [Releases](https://github.com/drakmor/ShadowMountPlus/releases).
+- `shadowmountplus.elf` built from this fork.
 - A payload sender or a compatible autoloader.
 
 ## Quick start
@@ -82,6 +82,7 @@ http://<PS5_IP>:10101
 | `.ffpfs` | PFS disk image | Supported |
 | `.ffpfsc` | Compressed PFS container holding another supported image | Supported; compression can affect loading performance |
 | Game folder | Extracted game files | Supported in scanned or manually specified paths |
+| `.pkg` | Plaintext PS5 debug base-game package | Use **Installation → U** for a compatible local package |
 
 **Choose `.ffpkg` for general use.** Use `.exfat` when a game needs external-drive compatibility; create it with a **64 KB allocation unit**. Compressed `.ffpfsc` containers are best reserved for games without demanding continuous data streaming.
 
@@ -181,10 +182,46 @@ Open **Installation** to browse available PS5 storage, USB/external drives, and 
 
 - **Install from a folder or image:** select a supported PS4/PS5 game folder or `.ffpkg`, `.exfat`, `.ffpfs`, or `.ffpfsc` image, choose a local console destination, and start the installation. ShadowMountPlus copies the source and registers the copied game; the original source is retained.
 - **Install PKG files:** install base games, game updates (patches), or DLC packages from console storage, external drives, or an SMB share. The required base game must be present or included in the installation workflow.
+- **Mount a debug PS5 package:** select **U** next to a compatible plaintext debug base-game package on local console storage, M.2, or USB storage. SMP registers the game in the PS5 menu and reads game assets from that file. Keep the original `.pkg` in place while the game is registered. SMP stores launch files and the asset index under `/data/shadowmount/kraken/<TitleID>`. Files with sparse blocks also use one small shared volume of zeros in that cache. This experimental feature uses Kraken Mount's reader and its bundled AMPR-emu-ng runtime inside `shadowmountplus.elf`. To switch to a different base package with the same Title ID, remove the previous registration first.
+- **Remove a mounted package from the library:** use **Uninstall** from the SMP library to remove the registration. The source `.pkg` and cache remain available for mounting again.
+- **Apply a debug LIH update to a mounted PKG:** close the game and select **U** on the update package. SMP checks the exact base image blocks and prepares the updated game in the Kraken cache. Patch blocks are decoded into a local asset volume when the unchanged base cannot supply them in one read, so allow free space for the cache. Both input packages are read-only. Select **U** on the base again to remove the update from the cache.
 - **Install directly from a PC browser:** select PKG files on your computer and send them to the PS5 installer without first manually copying the complete packages to console storage. **Keep the browser page open until streaming completes.**
 - **Use the installation queue:** collect up to 32 PKGs from supported sources and follow installation progress. PC batches can be ordered automatically as **base game → update → DLC**, so dependent content is installed in the correct sequence. Queued files are not removed from their source storage merely because they have been installed.
 - **Manage files and destinations:** copy or move supported game sources, choose a writable destination, create a folder where permitted, and delete eligible files from the Installation browser with confirmation.
 - **Monitor operations:** view transfer or installation progress and cancel an active operation while it remains cancellable. Some final installation or deletion steps cannot be safely interrupted.
+
+Selecting **U** starts one cancellable job for the selected PKG. The mounted
+source is retained for registered games across restarts. Existing PKG lines
+in `manual.lst` can be removed from the manual source list. Library scans list
+already registered Kraken games using their stored source.
+
+Kraken Mount v0.2.1 adds container-only save and trophy metadata, artwork,
+and support for packages with short compressed blocks shared by multiple
+files. The package and its containing directory gain missing read or directory
+access bits when the game launches. Existing caches stay usable. To rebuild the
+cache and refresh the staged metadata, select **U** on the base PKG for an
+unpatched game, or on the applied LIH package to rebuild with its update.
+
+The Kraken Mount v0.3.0 integration leaves the system save module in place
+when a PKG supplies `libSceSaveData.native.sprx` in its legacy `fakelib/`.
+An explicit `fakelib2/` or backport can still supply its own module.
+Rebuild an existing game's cache once with **U** to apply the save fix.
+Files named `dlc_emu.ini` and `playgo_stub.dat` at the package root are staged
+as separate files so that game and backport modules can read them.
+For a PKG game whose staged executable references PlayGo, SMP supplies
+drakmor's `pgo_stub` 0.6 when the game or backport supplies no PlayGo module.
+To turn the bundled stub off for a title, open its **Details** in **Library**
+and turn off **Use bundled PlayGo stub**. SMP saves the setting as
+`playgo_stub = off` in that title's section of `profiles.ini` and applies it
+when the game next starts.
+
+Kraken-mounted PKGs, including those with a LIH update, can load
+`libSceAmpr.sprx` from the same `[emulators] path` as other games. The default
+path is `/data/shadowmount/emus`. Enable `[emulators] update_enabled` and use a
+build of AMPR-emu-NG with debug PKG support. SMP falls back to the bundled
+library if the shared module is absent or fails validation. Replacing the
+shared module takes effect when the game next starts, using the existing
+cache and LIH update.
 
 For installed games, use the **Library** details to review updates and DLC and remove them individually. Deleting an installer `.pkg` file in **Installation** removes that file, **not** the already installed game. Conversely, uninstalling a game from **Library** does not automatically delete the original PKG installer.
 
@@ -387,9 +424,22 @@ Debug logging is enabled by default. You can change it with `[general] debug = o
 - [API documentation](docs/api.md) — web/API endpoints and integration reference.
 - [Releases](https://github.com/drakmor/ShadowMountPlus/releases) — downloads and release notes.
 
+## Updating the upstream projects
+
+Run these commands from a clean checkout. An SMP update merges the source history. A Kraken update imports the specified release's package reader, index writer and matching AMPR runtime, checks the runtime checksum, and reapplies the SMP adaptation in `tools/kraken-index.patch`. Review any merge conflict or patch failure before continuing. Build and test the result before committing the Kraken update or publishing either update.
+
+```bash
+bash tools/sync-upstream.sh smp
+bash tools/sync-upstream.sh kraken v0.3.0
+```
+
+Replace `v0.3.0` with the Kraken release tag you want to test. The imported commit is recorded in `vendor/kraken/REVISION`. The PS5 build uses the vendored version so that a release rebuild selects the same reader and runtime.
+
 ## Credits
 
 **Drakmor** — development and evolution of ShadowMount into ShadowMountPlus.
+
+**quer3q** — [Kraken Mount](https://github.com/quer3q/kraken-mount) package reader and index writer and [AMPR-emu-ng](https://github.com/quer3q/ampr-emu-ng) runtime. See [the vendored notices](vendor/kraken/THIRD_PARTY_NOTICES) for attribution and license details.
 
 Special thanks to **VoidWhisper** (original ShadowMount), **BestPig** (BackPort), **EchoStretch**, **Gezine**, **earthonion**, **LightningMods**, **RenanGBarreto** ([MkPFS](https://github.com/PSBrew/MkPFS)), **john-tornblom** (SDK), and the **PS5 R&D community**.
 

@@ -10,6 +10,7 @@
 #include "sm_fakelib.h"
 #include "sm_filesystem.h"
 #include "sm_game_lifecycle.h"
+#include "sm_kraken.h"
 #include "sm_gameinfo.h"
 #include "sm_limits.h"
 #include "sm_log.h"
@@ -191,11 +192,13 @@ static bool snapshot_active_game(pid_t pid, char title_id[MAX_TITLE_ID]) {
 
 static bool title_is_usb_backed(const char *title_id, const char *source_path,
                                 bool has_mount_link) {
-  char image_path[MAX_PATH];
-  if (read_mount_image_link(title_id, image_path, sizeof(image_path)) &&
-      is_usb_storage_path(image_path)) {
+  char backing[MAX_PATH];
+  if (read_mount_image_link(title_id, backing, sizeof(backing)) &&
+      is_usb_storage_path(backing)) {
     return true;
   }
+  if (has_mount_link && sm_kraken_source(source_path, backing))
+    return is_usb_storage_path(backing);
   return has_mount_link && is_usb_storage_path(source_path);
 }
 

@@ -1,6 +1,7 @@
 #include "sm_platform.h"
 #include <json-c/json.h>
 #include "sm_gameinfo.h"
+#include "sm_l10n.h"
 #include "sm_limits.h"
 #include "sm_path_state.h"
 
@@ -20,11 +21,32 @@ static bool extract_json_string(struct json_object *object, const char *key,
   return true;
 }
 
+bool sm_gameinfo_console_title(struct json_object *localized, char *out) {
+  if (!json_object_is_type(localized, json_type_object))
+    return false;
+  const char *locale = sm_l10n_console_locale();
+  json_object_object_foreach(localized, key, value) {
+    if (strcasecmp(key, locale) == 0 &&
+        extract_json_string(value, "titleName", out, MAX_TITLE_NAME))
+      return true;
+  }
+  const size_t length = strcspn(locale, "-");
+  json_object_object_foreach(localized, region, translation) {
+    if (strcspn(region, "-") == length &&
+        strncasecmp(region, locale, length) == 0 &&
+        extract_json_string(translation, "titleName", out, MAX_TITLE_NAME))
+      return true;
+  }
+  return false;
+}
+
 static void extract_title_name(struct json_object *root, char *out) {
   struct json_object *localized = NULL;
   struct json_object *language = NULL;
   if (json_object_object_get_ex(root, "localizedParameters", &localized) &&
       json_object_is_type(localized, json_type_object)) {
+    if (sm_gameinfo_console_title(localized, out))
+      return;
     if (json_object_object_get_ex(localized, "en-US", &language) &&
         extract_json_string(language, "titleName", out, MAX_TITLE_NAME))
       return;

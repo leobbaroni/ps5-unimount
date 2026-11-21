@@ -10,6 +10,7 @@
 #include "sm_game_lifecycle.h"
 #include "sm_gameinfo.h"
 #include "sm_image.h"
+#include "sm_kraken.h"
 #include "sm_limits.h"
 #include "sm_log.h"
 #include "sm_path_utils.h"
@@ -407,6 +408,8 @@ static bool resumed_runtime_source_ready(const char *title_id,
 
   if (is_usb_storage_path(runtime_source))
     return directory_has_game_executable(runtime_source);
+  if (sm_kraken_is_cache(runtime_source))
+    return sm_kraken_source_ready(runtime_source);
   if (!is_under_image_mount_base(runtime_source))
     return true;
 
@@ -446,15 +449,19 @@ static bool wait_for_resumed_runtime_source(const char *title_id,
 static bool prepare_title_runtime(const char *title_id,
                                   const char *source_path,
                                   const bool *mount_read_only_override) {
+  bool kraken = sm_kraken_is_cache(source_path);
+  if (kraken && !sm_kraken_source_ready(source_path))
+    return false;
   if (!prepare_image_source(title_id, source_path,
                             mount_read_only_override))
     return false;
-  sm_fakelib_prepare_title_cache(title_id, source_path);
+  if (!kraken)
+    sm_fakelib_prepare_title_cache(title_id, source_path);
   runtime_mount_state_lock();
   bool title_mounted = !runtime_sleep_mode_active() &&
                        mount_title_nullfs(title_id, source_path);
   bool ready = title_mounted;
-  if (ready)
+  if (ready && !kraken)
     ready = mount_backport_overlay_for_title(source_path, title_id, NULL, NULL);
   if (title_mounted && !ready)
     (void)unmount_title_runtime_layers(title_id);
@@ -509,6 +516,9 @@ static int mount_managed_title_runtime(const char *title_id,
     return ENOTSUP;
   if (!wait_for_resumed_runtime_source(title_id, source_path))
     return EIO;
+  bool kraken = sm_kraken_is_cache(source_path);
+  if (kraken && !sm_kraken_source_ready(source_path))
+    return errno ? errno : EIO;
 
   bool claimed = false;
   int claim_status =
@@ -517,7 +527,7 @@ static int mount_managed_title_runtime(const char *title_id,
     return claim_status;
   if (!claimed && is_data_mounted(title_id) &&
       !mount_read_only_override) {
-    if (launch_request)
+    if (launch_request && !kraken)
       sm_fakelib_prepare_title_cache(title_id, source_path);
     finish_prepared_title(title_id, false);
     return 0;
@@ -1042,6 +1052,9 @@ bool sm_shellcore_source_is_protected(const char *path) {
     }
     if (paths_overlap(path, runtime_path))
       return true;
+    char package[MAX_PATH];
+    if (sm_kraken_source(runtime_path, package) && paths_overlap(path, package))
+      return true;
     char chain[MAX_IMAGE_CHAIN_DEPTH][MAX_PATH];
     size_t layers = 0;
     if (!read_mount_image_chain(titles[i], chain, &layers) || layers == 0) {
@@ -1190,8 +1203,10 @@ static int handle_sandbox_ready_request(const char *title_id) {
     return 0;
 
   errno = 0;
-  bool package_ready =
-      sm_pkg_backport_on_sandbox_ready(effective_title_id);
+  char runtime_path[MAX_PATH];
+  bool kraken = read_mount_link(effective_title_id, runtime_path, sizeof(runtime_path)) &&
+                sm_kraken_is_cache(runtime_path);
+  bool package_ready = kraken || sm_pkg_backport_on_sandbox_ready(effective_title_id);
   int package_status = package_ready ? 0 : (errno != 0 ? errno : EIO);
 
   if (sm_fakelib_game_on_sandbox_ready(effective_title_id)) {

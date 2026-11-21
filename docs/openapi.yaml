@@ -410,7 +410,7 @@ paths:
           $ref: "#/components/responses/Preflight"
     post:
       operationId: setGameFakelib
-      summary: Set the fakelib mode or global overlay exclusion for a PS5 game on its next launch
+      summary: Set a PS5 game's fakelib, global overlay or bundled PlayGo policy for its next launch
       tags: [Games]
       requestBody:
         required: true
@@ -424,12 +424,21 @@ paths:
                     - required: [mode]
                     - required: [enabled]
                   not:
-                    required: [ignore_global_fakelib]
+                    anyOf:
+                      - required: [ignore_global_fakelib]
+                      - required: [playgo_stub_enabled]
                 - required: [ignore_global_fakelib]
                   not:
                     anyOf:
                       - required: [mode]
                       - required: [enabled]
+                      - required: [playgo_stub_enabled]
+                - required: [playgo_stub_enabled]
+                  not:
+                    anyOf:
+                      - required: [mode]
+                      - required: [enabled]
+                      - required: [ignore_global_fakelib]
               properties:
                 title_id:
                   $ref: "#/components/schemas/TitleId"
@@ -444,6 +453,9 @@ paths:
                 ignore_global_fakelib:
                   type: boolean
                   description: Update only the global overlay exclusion. False removes it. Cannot be combined with mode or enabled.
+                playgo_stub_enabled:
+                  type: boolean
+                  description: Enable or disable the bundled PlayGo stub for a Kraken-mounted PKG. Submit on its own.
       responses:
         "200":
           description: Per-title policy saved; existing mounts are preserved
@@ -458,6 +470,9 @@ paths:
                     const: 0
                   title_id:
                     $ref: "#/components/schemas/TitleId"
+                  playgo_stub_enabled:
+                    type: boolean
+                    description: Effective bundled stub setting when it was updated.
                   fakelib_mode:
                     type: string
                     enum: [full, emulators, disabled]
@@ -1071,6 +1086,43 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "409":
           $ref: "#/components/responses/Busy"
+
+  /api/v1/packages/mount:
+    post:
+      operationId: mountDebugPackage
+      summary: Register or relink a debug PKG, or apply a compatible LIH update
+      tags: [Packages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: {type: string, example: /mnt/usb0/packages/game.pkg}
+                verification:
+                  type: string
+                  enum: [full, fast]
+                  default: full
+                  description: LIH only. Full covers required base blocks; fast validates base blocks read during the build.
+                relink:
+                  type: string
+                  enum: [keep_patch, base_only]
+                  description: Base PKG only. Recover a stale registration using the selected source, retaining or detaching the LIH.
+      responses:
+        "202":
+          description: One-shot base mount or LIH application job accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageJobResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No Kraken base is registered for this update
+        "409":
+          description: A different source already owns the Title ID
 
   /api/v1/sources/install:
     post:
@@ -2200,6 +2252,7 @@ components:
         - installed_pkg
         - can_uninstall
         - can_manage_source
+        - kraken_patch_applied
         - can_toggle_fakelib
         - ignore_global_fakelib
         - fakelib_mode
@@ -2265,6 +2318,12 @@ components:
         can_manage_source:
           type: boolean
           description: False for installed PKGs; source mutations are forbidden.
+        kraken_patch_applied:
+          type: boolean
+          description: The registered title uses a Kraken cache with an applied LIH update.
+        playgo_stub_enabled:
+          type: boolean
+          description: Bundled PlayGo stub policy for a Kraken-mounted PKG that can use it or has saved an opt-out. Game details only.
         can_toggle_fakelib:
           type: boolean
           description: True for PS5 games in PKGs, images and folders.
@@ -2447,7 +2506,7 @@ components:
           minimum: 0
         operation:
           type: string
-          enum: ["", move, copy, delete, unpack, install, eject]
+          enum: ["", move, copy, delete, unpack, install, eject, mount_package]
         state:
           type: string
           enum: [idle, preparing, measuring, transferring, deleting, finalizing, installing, completed, failed, cancelled]
@@ -2471,7 +2530,7 @@ components:
         package_kind: {type: string, enum: [unknown, base, patch, dlc]}
         source_type:
           type: string
-          enum: ["", folder, image, pkg, stream, backport, usb]
+          enum: ["", folder, image, pkg, stream, backport, usb, kraken]
         source:
           type: string
         runtime_source:
@@ -2515,6 +2574,10 @@ components:
         affected_titles:
           type: integer
           minimum: 0
+        kraken_phase:
+          type: integer
+          enum: [0, 1, 2, 3]
+          description: For a mount_package job, 0 checks patch bytes, 1 checks base bytes, 2 builds the cache, and 3 checks Kraken block boundaries before cache build.
         result_status:
           type: integer
           minimum: 0
@@ -2679,7 +2742,7 @@ components:
     OperationErrorReason:
       type: string
       description: Stable reason code for localized operation errors; empty for generic errno failures.
-      enum: ["", rest_mode, game_active, install_pending, runtime_prepared, scanner_busy, runtime_busy, title_unmount_busy, image_unmount_busy, unpack_mounted, storage_busy, storage_unavailable, usb_disk_busy, usb_mount_busy, usb_partition_busy, usb_image_busy, usb_mount_changed, usb_eject_unconfirmed, usb_eject_failed, pkg_invalid, pkg_base_missing, pkg_stream_lost, pkg_source_changed, pkg_already_installed, pkg_queued, pkg_queue_full]
+      enum: ["", rest_mode, game_active, install_pending, runtime_prepared, scanner_busy, runtime_busy, title_unmount_busy, image_unmount_busy, unpack_mounted, storage_busy, storage_unavailable, usb_disk_busy, usb_mount_busy, usb_partition_busy, usb_image_busy, usb_mount_changed, usb_eject_unconfirmed, usb_eject_failed, pkg_invalid, pkg_base_missing, pkg_stream_lost, pkg_source_changed, pkg_already_installed, pkg_queued, pkg_queue_full, kraken_patch_invalid, kraken_decode_failed, kraken_base_missing, kraken_patch_source_missing, kraken_base_invalid, kraken_title_conflict, kraken_use_mount, kraken_sources_changed]
 
     PackageListing:
       type: object
@@ -2722,6 +2785,13 @@ components:
               sdk_version: {type: integer, minimum: 0, maximum: 4294967295, description: Packed SDK from param.json/param.sfo for PKGs and game directories or the backport eboot.bin process parameter; zero when unavailable.}
               kind: {type: string, enum: [base, patch, dlc, unknown]}
               installed: {type: boolean, description: The base game is already installed as a native PKG.}
+              mountable: {type: boolean, description: The local base or update can be selected for Kraken mounting. Full validation follows.}
+              mount_patch: {type: boolean, description: The debug LIH is a candidate for an existing Kraken registration.}
+              kraken_only: {type: boolean, description: This LIH targets a mounted PKG. Native install requires a system-installed base.}
+              kraken_patch_applied: {type: boolean, description: The current Kraken cache was built from this update.}
+              kraken_relink: {type: boolean, description: This base PKG can be selected to recover a stale registration.}
+              kraken_relink_patched: {type: boolean, description: The stale registration currently has an applied LIH.}
+              kraken_restore_base: {type: boolean, description: Mounting this base again will remove the update from the Kraken cache.}
               replaceable: {type: boolean, description: Full media application remaster that can replace an existing native app.}
               base_installed: {type: boolean, description: A base game is registered from a PKG or a folder/image source.}
               base_queued: {type: boolean}

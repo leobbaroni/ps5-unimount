@@ -20,6 +20,7 @@
 #include "sm_image_index.h"
 #include "sm_image.h"
 #include "sm_install_queue.h"
+#include "sm_kraken.h"
 #include "sm_manual.h"
 #include "sm_self.h"
 #include "sm_shellcore_service.h"
@@ -324,6 +325,11 @@ static existing_directory_result_t handle_existing_directory_candidate(
   bool installed = in_app_db && is_installed(info->title_id);
   bool appmeta_present =
       installed ? get_appmeta_present_for_scan_cycle(info->title_id) : false;
+  if (installed && has_tracked_path && sm_kraken_is_cache(tracked_path)) {
+    (void)strlcpy(preferred_existing_path_out, tracked_path, MAX_PATH);
+    return link_matches_source ? EXISTING_DIRECTORY_PREFER_CURRENT
+                               : EXISTING_DIRECTORY_PREFER_CACHED;
+  }
   link_matches_source = installed && link_matches_source;
   bool source_valid = false;
   if (link_matches_source)
@@ -876,6 +882,11 @@ static void collect_scan_candidates_from_manual_path(
     return;
   }
 
+  // Older builds recorded requested PKGs in manual.lst. A scan only collects
+  // already registered PKG games; it never runs a package mount.
+  if (sm_kraken_is_package(manual_path))
+    return;
+
   struct stat st;
   if (stat(manual_path, &st) != 0) {
     if (note_manual_missing_source_once(manual_path))
@@ -1379,6 +1390,33 @@ static void collect_scan_candidates_from_manual_list(
   log_debug("  [MANUAL] scanned %d manual source(s)", ctx.path_count);
 }
 
+static void collect_registered_kraken_games(const scan_app_db_context_t *app_db,
+                                             scan_candidate_t *candidates,
+                                             int *candidate_count) {
+  for (int i = 0; app_db->titles_ready && i < app_db->titles->count; i++) {
+    if (should_stop_requested() || runtime_sleep_mode_active())
+      break;
+    const char *title_id = app_db->titles->ids[i];
+    if (strncmp(title_id, "PPSA", 4u) != 0 || !is_supported_game_title_id(title_id))
+      continue;
+    char cache[MAX_PATH], package[MAX_PATH];
+    if (!read_mount_link(title_id, cache, sizeof(cache)) ||
+        !sm_kraken_source(cache, package))
+      continue;
+    int duplicate = find_scan_candidate_index_by_title_id(candidates, *candidate_count,
+                                                           title_id);
+    if (duplicate >= 0)
+      remove_scan_candidate_at(candidates, candidate_count, duplicate);
+    sm_pkg_info_t metadata;
+    if (!directory_has_game_executable(cache) ||
+        !sm_pkg_read_directory_metadata(cache, &metadata) ||
+        strcmp(metadata.title_id, title_id) != 0)
+      continue;
+    note_found_title(title_id);
+    cache_game_entry(cache, title_id, metadata.title_name[0] ? metadata.title_name : title_id);
+  }
+}
+
 static void uninstall_blocked_ppsa_titles(
     const struct AppDbTitleList *blocked_ppsa_titles,
     bool blocked_ppsa_titles_ready) {
@@ -1480,6 +1518,7 @@ int collect_scan_candidates(scan_candidate_t *candidates, int max_candidates,
       candidates, max_candidates, &candidate_count, &app_db,
       g_scan_workspace.discovered_param_roots, &discovered_param_root_count,
       unstable_found_out);
+  collect_registered_kraken_games(&app_db, candidates, &candidate_count);
 
   uninstall_blocked_ppsa_titles(&blocked_ppsa_titles,
                                 blocked_ppsa_titles_ready);

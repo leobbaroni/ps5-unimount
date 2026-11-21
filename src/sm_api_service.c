@@ -21,6 +21,7 @@
 #include "sm_image.h"
 #include "sm_image_cache.h"
 #include "sm_image_index.h"
+#include "sm_install.h"
 #include "sm_install_queue.h"
 #include "sm_log.h"
 #include "sm_manual.h"
@@ -29,6 +30,7 @@
 #include "sm_path_utils.h"
 #include "sm_paths.h"
 #include "sm_pkg.h"
+#include "sm_kraken.h"
 #include "sm_pkg_native.h"
 #include "sm_pkg_server.h"
 #include "sm_pkg_stream.h"
@@ -39,6 +41,7 @@
 #include "sm_storage.h"
 #include "sm_time.h"
 #include "sm_title_state.h"
+#include "sm_types.h"
 #include "sm_smb.h"
 #include "sm_vfs.h"
 #include "sm_usb.h"
@@ -102,6 +105,7 @@ typedef enum {
   GAME_STORAGE_UNPACK,
   GAME_STORAGE_INSTALL,
   GAME_STORAGE_EJECT,
+  GAME_STORAGE_MOUNT_PACKAGE,
 } game_storage_operation_t;
 
 typedef enum {
@@ -121,6 +125,13 @@ typedef struct {
   char source[MAX_PATH];
   char target[MAX_PATH];
 } usb_eject_blocker_t;
+
+typedef enum {
+  KRAKEN_MOUNT,
+  KRAKEN_FAST_PATCH,
+  KRAKEN_RELINK,
+  KRAKEN_RELINK_BASE,
+} kraken_action_t;
 
 typedef struct {
   pthread_mutex_t mutex;
@@ -147,6 +158,8 @@ typedef struct {
   uint64_t transfer_finished_us;
   uint64_t finished_us;
   size_t affected_titles;
+  uint32_t kraken_phase;
+  kraken_action_t kraken_action;
   int result_status;
   char result_error_reason[32];
   usb_eject_blocker_t usb_blocker;
@@ -185,6 +198,7 @@ typedef struct {
   uint64_t transfer_finished_us;
   uint64_t finished_us;
   size_t affected_titles;
+  uint32_t kraken_phase;
   int result_status;
   char result_error_reason[32];
   usb_eject_blocker_t usb_blocker;
@@ -219,6 +233,8 @@ static void handle_file_listing(struct MHD_Connection *connection, struct json_o
 static void handle_backport_operation(struct MHD_Connection *connection, struct json_object *request,
                                       game_storage_operation_t operation);
 static void handle_package_install(struct MHD_Connection *connection, struct json_object *request, bool streaming, bool from_queue);
+static void handle_package_mount(struct MHD_Connection *connection,
+                                 struct json_object *request);
 static void handle_package_queue(struct MHD_Connection *connection, struct json_object *request);
 static void handle_source_install(struct MHD_Connection *connection, struct json_object *request);
 static void handle_source_delete(struct MHD_Connection *connection, struct json_object *request);
@@ -702,6 +718,7 @@ static void handle_version(struct MHD_Connection *fd) {
       !append_json_string(capabilities, "game_info") ||
       !append_json_string(capabilities, "game_data_sizes") ||
       !append_json_string(capabilities, "pkg_install") ||
+      !append_json_string(capabilities, "pkg_mount") ||
       !append_json_string(capabilities, "pkg_browser_stream") ||
       !append_json_string(capabilities, "smb2_smb3") ||
       !append_json_string(capabilities, "game_icon") ||
@@ -1046,6 +1063,8 @@ typedef struct {
   const char *source_type;
   const char *image_type;
   bool image_backed;
+  bool kraken;
+  kraken_action_t kraken_action;
   uint64_t usb_mount_id;
 } game_source_info_t;
 
@@ -1057,6 +1076,13 @@ static bool resolve_game_source(const sm_game_cache_snapshot_entry_t *source,
   (void)strlcpy(info->runtime_path, source->path,
                 sizeof(info->runtime_path));
 
+  if (sm_kraken_is_cache(source->path)) {
+    (void)sm_kraken_source(source->path, info->physical_path);
+    info->source_type = "pkg";
+    info->image_type = "";
+    info->kraken = true;
+    return true;
+  }
   char image_path[MAX_PATH];
   if (read_mount_image_link(source->title_id, image_path,
                             sizeof(image_path))) {
@@ -1335,10 +1361,21 @@ static struct json_object *game_to_json(
       metadata && metadata->title_name[0] != '\0' ? metadata->title_name
                                                   : source->title_name;
   const char *content_id = metadata ? metadata->content_id : "";
+  const char *version = metadata ? metadata->version : "";
+  sm_pkg_info_t mounted_pkg;
+  if (source_info.kraken && sm_pkg_read_directory_metadata(source->path, &mounted_pkg)) {
+    if (mounted_pkg.app_ver[0])
+      version = mounted_pkg.app_ver;
+    if (mounted_pkg.content_id[0])
+      content_id = mounted_pkg.content_id;
+  }
+  char lih_source[MAX_PATH];
+  bool lih_applied = source_info.kraken && sm_kraken_patch_source(source->path, lih_source);
   const char *last_access_time = metadata ? metadata->last_access_time : "";
   const char *install_time = metadata ? metadata->install_time : "";
   const char *platform = game_platform_name(source->title_id, metadata);
-  bool can_toggle_fakelib = strcmp(platform, "ps5") == 0;
+  bool can_toggle_fakelib = strcmp(platform, "ps5") == 0 && !source_info.kraken;
+  bool playgo_stub_disabled = sm_config_title_playgo_stub_disabled(cfg, source->title_id);
   sm_fakelib_mode_t fakelib_mode =
       sm_config_title_fakelib_mode(cfg, source->title_id);
   bool fakelib_enabled = fakelib_mode != SM_FAKELIB_DISABLED;
@@ -1357,7 +1394,7 @@ static struct json_object *game_to_json(
       !add_json_string(item, "title_id", source->title_id) ||
       !add_json_string(item, "content_id", content_id) ||
       !add_json_string(item, "title_name", title_name) ||
-      !add_json_string(item, "version", metadata ? metadata->version : "") ||
+      !add_json_string(item, "version", version) ||
       !add_json_string(item, "last_access_time", last_access_time) ||
       !add_json_string(item, "install_time", install_time) ||
       !add_json_string(item, "icon_url", icon_url) ||
@@ -1373,7 +1410,11 @@ static struct json_object *game_to_json(
   }
   if (!add_json_bool(item, "installed_pkg", installed_pkg) ||
       !add_json_bool(item, "can_uninstall", installed) ||
-      !add_json_bool(item, "can_manage_source", !installed_pkg) ||
+      !add_json_bool(item, "kraken_patch_applied", lih_applied) ||
+      (!library_entry && source_info.kraken &&
+       (playgo_stub_disabled || sm_kraken_has_bundled_playgo(source->path)) &&
+       !add_json_bool(item, "playgo_stub_enabled", !playgo_stub_disabled)) ||
+      !add_json_bool(item, "can_manage_source", !installed_pkg && !source_info.kraken) ||
       !add_json_bool(item, "can_toggle_fakelib", can_toggle_fakelib) ||
       !add_json_bool(item, "ignore_global_fakelib",
                      sm_config_title_global_fakelib_excluded(cfg, source->title_id)) ||
@@ -2199,6 +2240,14 @@ static const char *operation_error_message(int status, const char *reason) {
       {"pkg_already_installed", "the base game is already installed"},
       {"pkg_queued", "the package is already queued"},
       {"pkg_queue_full", "the installation queue is full (32 packages)"},
+      {"kraken_patch_invalid", "LIH update does not match a supported base PKG or failed validation; see the debug log"},
+      {"kraken_decode_failed", "failed to decode a Kraken block; see the debug log"},
+      {"kraken_base_missing", "mount the matching base PKG with U first"},
+      {"kraken_patch_source_missing", "the recorded LIH file is unavailable; choose the base-only recovery or restore the update file"},
+      {"kraken_base_invalid", "the base PKG could not be mounted; see the debug log"},
+      {"kraken_title_conflict", "another source is already registered for this title"},
+      {"kraken_use_mount", "use U for a compatible mounted update or use a system-installed base"},
+      {"kraken_sources_changed", "one of the selected packages changed during the operation"},
   };
   if (reason && reason[0] != '\0') {
     for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
@@ -2343,6 +2392,11 @@ static void handle_manual_update(struct MHD_Connection *fd,
   if (!get_manual_path(request, path)) {
     send_error_response(fd, 400, EINVAL,
                         "path must be a non-root absolute path");
+    return;
+  }
+
+  if (add && sm_kraken_is_package(path)) {
+    send_error_response(fd, 400, EINVAL, "Use U in Installation to mount a PKG");
     return;
   }
 
@@ -2863,7 +2917,11 @@ static int request_game_uninstall(const char *title_id,
   }
 
   bool source_missing = false;
+  char mounted_package[MAX_PATH] = "";
   if (!installed_pkg) {
+    char runtime_source[MAX_PATH];
+    if (read_mount_link(title_id, runtime_source, sizeof(runtime_source)))
+      (void)sm_kraken_source(runtime_source, mounted_package);
     game_source_info_t info;
     const char *source_error = NULL;
     (void)resolve_storage_source(title_id, GAME_STORAGE_DELETE, &info,
@@ -2880,6 +2938,9 @@ static int request_game_uninstall(const char *title_id,
 
   invalidate_app_db_title_cache();
   reset_title_attempts(title_id, NULL, NULL);
+  if (*mounted_package && !sm_manual_remove_path(mounted_package, NULL))
+    log_debug("  [API] could not remove unregistered package %s from manual sources: %s",
+              mounted_package, strerror(errno));
   if (source_missing)
     *scan_queued_out = request_scan_now("HTTP API missing source uninstall requested");
   log_debug("  [API] uninstall requested: title=%s", title_id);
@@ -3029,11 +3090,20 @@ static void handle_game_fakelib(struct MHD_Connection *connection,
   sm_fakelib_mode_t mode = SM_FAKELIB_DEFAULT;
   struct json_object *mode_value = NULL;
   struct json_object *global_value = NULL;
+  struct json_object *playgo_value = NULL;
   bool update_global = json_object_object_get_ex(request, "ignore_global_fakelib",
                                                  &global_value);
+  bool update_playgo = json_object_object_get_ex(request, "playgo_stub_enabled",
+                                                 &playgo_value);
   bool global_excluded = false;
+  bool playgo_enabled = false;
   bool valid_policy;
-  if (update_global) {
+  if (update_playgo) {
+    valid_policy = json_object_is_type(playgo_value, json_type_boolean) && !update_global &&
+                   !json_object_object_get_ex(request, "mode", &mode_value) &&
+                   !json_object_object_get_ex(request, "enabled", &mode_value);
+    playgo_enabled = json_object_get_boolean(playgo_value);
+  } else if (update_global) {
     valid_policy = json_object_is_type(global_value, json_type_boolean) &&
                    !json_object_object_get_ex(request, "mode", &mode_value) &&
                    !json_object_object_get_ex(request, "enabled", &mode_value);
@@ -3049,8 +3119,8 @@ static void handle_game_fakelib(struct MHD_Connection *connection,
   }
   if (!title_id || !valid_policy) {
     send_error_response(connection, 400, EINVAL,
-                        "title_id and a valid fakelib setting are required; "
-                        "ignore_global_fakelib cannot be combined with mode or enabled");
+                        "title_id and a valid fakelib setting are required. "
+                        "Send PlayGo or global overlay changes on their own");
     return;
   }
   if (strncmp(title_id, "PPSA", 4u) != 0) {
@@ -3080,9 +3150,18 @@ static void handle_game_fakelib(struct MHD_Connection *connection,
                         strerror(status));
     return;
   }
-  bool saved = update_global
-                   ? sm_config_set_title_global_fakelib_excluded(title_id, global_excluded)
-                   : sm_config_set_title_fakelib_mode(title_id, mode);
+  if (update_playgo && !sm_kraken_is_cache(entry.path)) {
+    send_error_response(connection, 400, EINVAL,
+                        "PlayGo stub settings require a mounted Kraken package");
+    return;
+  }
+  bool saved;
+  if (update_playgo)
+    saved = sm_config_set_title_playgo_stub_enabled(title_id, playgo_enabled);
+  else if (update_global)
+    saved = sm_config_set_title_global_fakelib_excluded(title_id, global_excluded);
+  else
+    saved = sm_config_set_title_fakelib_mode(title_id, mode);
   if (!saved) {
     int status = errno != 0 ? errno : EIO;
     send_error_response(connection, operation_http_status(status), status,
@@ -3106,6 +3185,8 @@ static void handle_game_fakelib(struct MHD_Connection *connection,
                            sm_config_title_fakelib_override(&cfg, title_id))) ||
       !add_json_bool(response, "fakelib_effective_enabled",
                      enabled && cfg.backport_fakelib_enabled) ||
+      (update_playgo && !add_json_bool(response, "playgo_stub_enabled",
+                     !sm_config_title_playgo_stub_disabled(&cfg, title_id))) ||
       !add_json_bool(response, "saved", true) ||
       !add_json_bool(response, "applies_on_next_launch", true)) {
     if (response)
@@ -3188,6 +3269,8 @@ static void dispatch_request(struct MHD_Connection *connection,
     handle_backport_operation(connection, json, GAME_STORAGE_DELETE);
   } else if (strcmp(route, SM_API_ROUTE_PACKAGE_INSTALL) == 0) {
     handle_package_install(connection, json, false, false);
+  } else if (strcmp(route, SM_API_ROUTE_PACKAGE_MOUNT) == 0) {
+    handle_package_mount(connection, json);
   } else if (strcmp(route, SM_API_ROUTE_PACKAGE_QUEUE) == 0) {
     handle_package_queue(connection, json);
   } else if (strcmp(route, SM_API_ROUTE_PACKAGE_STREAM) == 0) {
@@ -3214,6 +3297,8 @@ static const char *game_storage_operation_name(
     return "install";
   case GAME_STORAGE_EJECT:
     return "eject";
+  case GAME_STORAGE_MOUNT_PACKAGE:
+    return "mount_package";
   }
   return "unknown";
 }
@@ -3541,6 +3626,7 @@ static void copy_storage_job_snapshot_locked(
   snapshot->transfer_finished_us = g_storage_job.transfer_finished_us;
   snapshot->finished_us = g_storage_job.finished_us;
   snapshot->affected_titles = g_storage_job.affected_titles;
+  snapshot->kraken_phase = g_storage_job.kraken_phase;
   snapshot->result_status = g_storage_job.result_status;
   (void)strlcpy(snapshot->result_error_reason, g_storage_job.result_error_reason,
                 sizeof(snapshot->result_error_reason));
@@ -3664,6 +3750,7 @@ static bool add_storage_job_fields(struct json_object *response,
                       (int64_t)storage_job_elapsed_ms(snapshot, now_us)) &&
          add_json_int(response, "affected_titles",
                       (int64_t)snapshot->affected_titles) &&
+         add_json_int(response, "kraken_phase", snapshot->kraken_phase) &&
          add_json_int(response, "result_status", snapshot->result_status) &&
          add_json_string(response, "result_error",
                          snapshot->result_status == 0
@@ -4050,6 +4137,140 @@ static void run_usb_eject_job(uint64_t job_id, const char *path,
   finish_storage_job(job_id, status, false, error);
 }
 
+static bool registered_kraken_base(const char *title_id, char cache[MAX_PATH],
+                                   char source[MAX_PATH]) {
+  return read_mount_link(title_id, cache, MAX_PATH) &&
+         sm_kraken_source(cache, source);
+}
+
+static bool lih_targets_kraken(const sm_pkg_info_t *info) {
+  char cache[MAX_PATH], source[MAX_PATH];
+  return info->is_lih && registered_kraken_base(info->title_id, cache, source);
+}
+
+static int kraken_title_registration(const char *title_id, bool *registered) {
+  struct AppDbTitleList titles = {0};
+  if (!get_app_db_title_list_cached(&titles))
+    return EIO;
+  *registered = app_db_title_list_contains(&titles, title_id);
+  free_app_db_title_list(&titles);
+  return 0;
+}
+
+static void update_kraken_job(void *ctx, uint32_t phase, uint64_t done, uint64_t total) {
+  uint64_t job_id = (uint64_t)(uintptr_t)ctx;
+  pthread_mutex_lock(&g_storage_job.mutex);
+  if (g_storage_job.id == job_id && g_storage_job.state != STORAGE_JOB_FINALIZING) {
+    if (g_storage_job.state != STORAGE_JOB_TRANSFERRING || g_storage_job.kraken_phase != phase)
+      g_storage_job.transfer_started_us = monotonic_time_us();
+    g_storage_job.state = STORAGE_JOB_TRANSFERRING;
+    g_storage_job.kraken_phase = phase;
+    g_storage_job.processed_bytes = phase == 2u ? 0 : done;
+    g_storage_job.total_bytes = phase == 2u ? 0 : total;
+    g_storage_job.processed_files = phase == 2u ? done : 0;
+    g_storage_job.total_files = phase == 2u ? total : 0;
+  }
+  pthread_mutex_unlock(&g_storage_job.mutex);
+}
+
+static void run_kraken_job(uint64_t job_id, const char *title_id,
+                           const char *source, const char *expected_base,
+                           kraken_action_t action) {
+  bool update = expected_base[0] != '\0';
+  bool relink = action == KRAKEN_RELINK || action == KRAKEN_RELINK_BASE;
+  const char *error = runtime_mutation_block_reason();
+  bool scanner = false, runtime = false;
+  int status = error ? EBUSY : 0;
+  void *ctx = (void *)(uintptr_t)job_id;
+  if (!status && storage_job_cancelled(ctx))
+    status = ECANCELED;
+  if (!status && !(scanner = sm_scanner_try_begin_external_mutation())) {
+    status = EBUSY;
+    error = "scanner_busy";
+  }
+  if (!status && !(runtime = sm_shellcore_try_begin_external_mutation())) {
+    status = EBUSY;
+    error = "runtime_busy";
+  }
+  if (!status && (sm_shellcore_title_is_protected(title_id) ||
+      sm_shellcore_source_is_protected(source))) {
+    status = EBUSY;
+    error = "game_active";
+  }
+  bool registered = false;
+  if (!status)
+    status = kraken_title_registration(title_id, &registered);
+  char cache[MAX_PATH], base_path[MAX_PATH];
+  bool managed = !status && read_mount_link(title_id, cache, sizeof(cache));
+  bool kraken = managed && sm_kraken_source(cache, base_path);
+  if (!status && update && (!registered || !kraken ||
+      strcmp(expected_base, base_path) != 0 || !sm_kraken_source_ready(cache))) {
+    status = ENOENT;
+    error = "kraken_base_missing";
+  }
+  if (!status && !update && ((relink && (!registered || !kraken)) ||
+      (managed && !kraken) ||
+      (registered && (!kraken || (!relink && strcmp(source, base_path) != 0))))) {
+    status = EEXIST;
+    error = "kraken_title_conflict";
+  }
+  sm_pkg_info_t base, patch;
+  const char *selected_base = update ? base_path : source;
+  if (!status && (!sm_pkg_parse_file(selected_base, NULL, &base) ||
+      strcmp(title_id, base.title_id) != 0 ||
+      !sm_kraken_can_mount(&base))) {
+    status = update ? ENOENT : EINVAL;
+    error = update ? "kraken_base_missing" : "kraken_base_invalid";
+  }
+  if (!status && update && (!sm_pkg_parse_file(source, NULL, &patch) ||
+      !sm_kraken_can_apply_patch(&patch))) {
+    status = EINVAL;
+    error = "kraken_patch_invalid";
+  }
+  if (!status) {
+    bool rebuilt = false;
+    sm_kraken_job_t job = {
+      .cancelled = storage_job_cancelled, .finalize = begin_storage_job_finalizing,
+      .progress = update_kraken_job, .ctx = ctx, .fast = action == KRAKEN_FAST_PATCH,
+      .rebuilt = &rebuilt,
+    };
+    bool ready = update ? sm_kraken_apply_patch(&base, &patch, &job)
+                        : relink ? sm_kraken_relink_base(&base, &job, cache, action == KRAKEN_RELINK)
+                        : sm_kraken_prepare_base(&base, &job, cache);
+    if (!ready) {
+      status = errno ? errno : EIO;
+      if (status == EAGAIN)
+        error = "kraken_sources_changed";
+      else if (status == EILSEQ)
+        error = "kraken_decode_failed";
+      else if (action == KRAKEN_RELINK && status == ENOENT)
+        error = "kraken_patch_source_missing";
+      else if (relink && status == EEXIST)
+        error = "kraken_title_conflict";
+      else if (status == EINVAL)
+        error = update ? "kraken_patch_invalid" : "kraken_base_invalid";
+    } else {
+      const bool refresh_metadata = !relink || rebuilt;
+      const char *name = base.title_name[0] ? base.title_name : title_id;
+      if (registered && !refresh_metadata && has_appmeta_data(title_id))
+        cache_game_entry(cache, title_id, name);
+      else if (!sm_install_mount_game(cache, title_id, name, registered, refresh_metadata)) {
+        status = errno ? errno : EIO;
+        if (status != ECANCELED)
+          error = "kraken_base_invalid";
+      }
+    }
+  }
+  if (runtime)
+    sm_shellcore_end_external_mutation();
+  if (scanner)
+    sm_scanner_end_external_mutation();
+  if (status)
+    log_debug("  [KRAKEN] requested mount stopped: %s status=%d (%s)",
+              source, status, operation_error_message(status, error));
+  finish_storage_job(job_id, status, false, error);
+}
+
 static void *storage_job_thread_main(void *arg) {
   uint64_t job_id = (uint64_t)(uintptr_t)arg;
   char title_id[MAX_TITLE_ID];
@@ -4071,6 +4292,7 @@ static void *storage_job_thread_main(void *arg) {
                 sizeof(destination));
   delete_source = g_storage_job.delete_source;
   operation = g_storage_job.operation;
+  kraken_action_t kraken_action = g_storage_job.kraken_action;
   usb_mount_id = g_storage_job.usb_mount_id;
   backport = strcmp(g_storage_job.source_type, "backport") == 0;
   browser_delete = operation == GAME_STORAGE_DELETE && !title_id[0];
@@ -4078,6 +4300,10 @@ static void *storage_job_thread_main(void *arg) {
 
   if (operation == GAME_STORAGE_EJECT) {
     run_usb_eject_job(job_id, source, runtime_source, usb_mount_id);
+    return NULL;
+  }
+  if (operation == GAME_STORAGE_MOUNT_PACKAGE) {
+    run_kraken_job(job_id, title_id, source, runtime_source, kraken_action);
     return NULL;
   }
 
@@ -4372,6 +4598,8 @@ static int launch_storage_job(const char *title_id,
   g_storage_job.transfer_finished_us = 0;
   g_storage_job.finished_us = 0;
   g_storage_job.affected_titles = 0;
+  g_storage_job.kraken_phase = 0;
+  g_storage_job.kraken_action = source_info->kraken_action;
   g_storage_job.result_status = 0;
   g_storage_job.result_error_reason[0] = '\0';
   memset(&g_storage_job.usb_blocker, 0, sizeof(g_storage_job.usb_blocker));
@@ -4488,8 +4716,10 @@ static bool package_root(const char *path, char root[MAX_PATH]) {
     size_t length=slash ? (size_t)(slash-canonical) : strlen(canonical);
     memcpy(root,canonical,length); root[length]=0; return true;
   }
-  if (path_matches_root_or_child(path, "/data")) {
-    strlcpy(root, "/data", MAX_PATH);
+  if (path_matches_root_or_child(path, "/data") ||
+      path_matches_root_or_child(path, "/user/data")) {
+    strlcpy(root, path_matches_root_or_child(path, "/data") ? "/data" : "/user/data",
+            MAX_PATH);
     return true;
   }
   for (int i = 0; i < 10; ++i) {
@@ -4517,6 +4747,72 @@ static int resolve_package_path(const char *path, char resolved[MAX_PATH], bool 
   if (lstat(resolved, &st) != 0) return errno;
   if (directory ? !S_ISDIR(st.st_mode) : !S_ISREG(st.st_mode)) return EINVAL;
   return 0;
+}
+
+static void handle_package_mount(struct MHD_Connection *connection,
+                                 struct json_object *request) {
+  char source[MAX_PATH];
+  int status = resolve_package_path(package_string(request, "path"), source, false);
+  if (status != 0) {
+    send_error_response(connection, operation_http_status(status), status, strerror(status));
+    return;
+  }
+  sm_pkg_info_t info;
+  if (!sm_kraken_is_package(source) || !sm_pkg_parse_file(source, NULL, &info)) {
+    send_error_response(connection, 400, ENOTSUP,
+                        "Mount requires a local PS5 debug PKG");
+    return;
+  }
+  game_source_info_t package = {
+      .source_type = "kraken",
+  };
+  struct json_object *option;
+  if (json_object_object_get_ex(request, "verification", &option)) {
+    const char *verification = package_string(request, "verification");
+    if (info.pkg_kind != PKG_KIND_PATCH || !verification ||
+        (strcmp(verification, "full") != 0 && strcmp(verification, "fast") != 0)) {
+      send_error_response(connection, 400, EINVAL, "invalid LIH verification mode");
+      return;
+    }
+    if (strcmp(verification, "fast") == 0)
+      package.kraken_action = KRAKEN_FAST_PATCH;
+  }
+  if (json_object_object_get_ex(request, "relink", &option)) {
+    const char *relink = package_string(request, "relink");
+    if (info.pkg_kind != PKG_KIND_BASE || !relink ||
+        (strcmp(relink, "keep_patch") != 0 && strcmp(relink, "base_only") != 0)) {
+      send_error_response(connection, 400, EINVAL, "invalid base PKG recovery mode");
+      return;
+    }
+    package.kraken_action = strcmp(relink, "base_only") == 0 ? KRAKEN_RELINK_BASE : KRAKEN_RELINK;
+  }
+  if (info.pkg_kind == PKG_KIND_PATCH) {
+    if (!sm_kraken_can_apply_patch(&info)) {
+      send_operation_error_response(connection, EINVAL, "kraken_patch_invalid");
+      return;
+    }
+    char cache[MAX_PATH];
+    if (!registered_kraken_base(info.title_id, cache, package.runtime_path) ||
+        !sm_kraken_source_ready(cache)) {
+      send_operation_error_response(connection, ENOENT, "kraken_base_missing");
+      return;
+    }
+  } else if (!sm_kraken_can_mount(&info)) {
+    send_error_response(connection, 400, ENOTSUP,
+                        "Mount requires a local plaintext PS5 debug base-game PKG");
+    return;
+  }
+  const char *error = runtime_mutation_block_reason();
+  if (!error && sm_shellcore_title_is_protected(info.title_id))
+    error = "game_active";
+  strlcpy(package.physical_path, source, sizeof(package.physical_path));
+  storage_job_snapshot_t accepted;
+  status = error ? EBUSY : launch_storage_job(info.title_id, &package, "",
+      GAME_STORAGE_MOUNT_PACKAGE, false, &accepted, &error);
+  if (status)
+    send_operation_error_response(connection, status, error);
+  else
+    send_storage_job_response(connection, 202, &accepted);
 }
 
 static void handle_source_install(struct MHD_Connection *connection, struct json_object *request) {
@@ -4833,8 +5129,22 @@ static bool add_package_state(struct json_object *item, const sm_pkg_info_t *inf
   pthread_mutex_lock(&g_storage_job.mutex);
   bool queued_base = package_base_queued_locked(info->title_id);
   pthread_mutex_unlock(&g_storage_job.mutex);
+  char cache[MAX_PATH], backing[MAX_PATH], patch[MAX_PATH];
+  bool kraken = base && !pkg_installed && read_mount_link(info->title_id, cache, sizeof(cache)) &&
+                sm_kraken_source(cache, backing);
+  bool use_kraken = kraken && info->is_lih;
+  bool mount_patch = use_kraken && sm_kraken_can_apply_patch(info);
+  bool patched = kraken && sm_kraken_patch_source(cache, patch);
+  bool relink = kraken && sm_kraken_can_relink(cache, info);
   return add_json_bool(item, "installed", info->pkg_kind == PKG_KIND_BASE && pkg_installed) &&
     add_json_bool(item, "base_installed", base) && add_json_bool(item, "base_queued", queued_base) &&
+    add_json_bool(item, "mountable", mount_patch || sm_kraken_can_mount(info)) &&
+    add_json_bool(item, "mount_patch", mount_patch) &&
+    add_json_bool(item, "kraken_only", use_kraken) &&
+    add_json_bool(item, "kraken_patch_applied", patched && !strcmp(info->path, patch)) &&
+    add_json_bool(item, "kraken_relink", relink) &&
+    add_json_bool(item, "kraken_relink_patched", relink && patched) &&
+    add_json_bool(item, "kraken_restore_base", patched && !strcmp(info->path, backing)) &&
     add_package_icon_info(item, info);
 }
 
@@ -5266,7 +5576,10 @@ static void *package_install_thread(void *opaque) {
         if (sm_pkg_is_media_remaster(&info)) info.pkg_kind = PKG_KIND_PATCH;
         else { status = EEXIST; error = "pkg_already_installed"; }
       }
-      else if (info.pkg_kind != PKG_KIND_BASE && !base) status = ENOENT;
+      else if (lih_targets_kraken(&info)) {
+        status = EINVAL;
+        error = "kraken_use_mount";
+      } else if (info.pkg_kind != PKG_KIND_BASE && !base) status = ENOENT;
     }
     if (!status && sm_shellcore_title_is_protected(info.title_id)) { status = EBUSY; error = "game_active"; }
     if (!status) {
@@ -5562,6 +5875,10 @@ static void handle_package_install(struct MHD_Connection *connection, struct jso
   if (status) { send_error_response(connection, operation_http_status(status), status, strerror(status)); return; }
   bool pkg_installed = false;
   bool base = !streaming && package_base_installed(info.title_id, &pkg_installed);
+  if (!streaming && lih_targets_kraken(&info)) {
+    send_operation_error_response(connection, EINVAL, "kraken_use_mount");
+    return;
+  }
   if (!streaming && !base && info.pkg_kind != PKG_KIND_BASE) {
     send_operation_error_response(connection, ENOENT, "pkg_base_missing"); return;
   }
@@ -5689,6 +6006,10 @@ static void handle_package_queue(struct MHD_Connection *connection, struct json_
     if (status) { send_operation_error_response(connection, status, "pkg_invalid"); return; }
     bool pkg_installed;
     bool base = package_base_installed(info.title_id, &pkg_installed);
+    if (lih_targets_kraken(&info)) {
+      send_operation_error_response(connection, EINVAL, "kraken_use_mount");
+      return;
+    }
     installed = info.pkg_kind == PKG_KIND_BASE ? pkg_installed : base;
   } else if (strcmp(action, "status") && strcmp(action, "start") &&
              strcmp(action, "remove") && strcmp(action, "clear")) {

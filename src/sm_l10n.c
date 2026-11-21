@@ -130,20 +130,22 @@ const char *sm_l10n_language_name(int32_t language_id) {
   return g_regions[language_id].locale;
 }
 
-void sm_l10n_init(void) {
+static int32_t console_language_id(void) {
   int32_t sys_lang = -1;
-  const runtime_config_t cfg = runtime_config();
-  int32_t active_lang = cfg.language_id;
-  bool auto_language = (active_lang == SM_LANGUAGE_AUTO);
+  if (sceSystemServiceParamGetInt(SCE_SYSTEM_SERVICE_PARAM_ID_LANG, &sys_lang) == 0 &&
+      is_valid_system_language_id(sys_lang))
+    return sys_lang;
+  return SM_LANGUAGE_EN_US;
+}
 
-  if (auto_language &&
-      sceSystemServiceParamGetInt(SCE_SYSTEM_SERVICE_PARAM_ID_LANG,
-                                  &sys_lang) == 0 &&
-      is_valid_system_language_id(sys_lang)) {
-    active_lang = sys_lang;
-  } else if (auto_language) {
-    active_lang = SM_LANGUAGE_EN_US;
-  }
+const char *sm_l10n_console_locale(void) {
+  return g_regions[console_language_id()].locale;
+}
+
+void sm_l10n_init(void) {
+  const runtime_config_t cfg = runtime_config();
+  bool auto_language = cfg.language_id == SM_LANGUAGE_AUTO;
+  int32_t active_lang = auto_language ? console_language_id() : cfg.language_id;
 
   if (!is_valid_language_id(active_lang))
     active_lang = SM_LANGUAGE_EN_US;

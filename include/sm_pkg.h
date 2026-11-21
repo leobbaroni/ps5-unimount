@@ -19,6 +19,7 @@ typedef struct {
   uint32_t source_mtime_ns, source_ctime_ns;
   uint32_t outer_content_type, outer_content_flags, content_type, content_flags;
   pkg_kind_t pkg_kind;
+  bool is_lih;
   bool pkg_classification_confident;
 } sm_pkg_info_t;
 typedef int (*sm_pkg_read_fn)(void *ctx, uint64_t offset, void *buffer, size_t size);

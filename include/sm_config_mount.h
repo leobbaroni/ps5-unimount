@@ -79,6 +79,9 @@ const char *sm_config_fakelib_mode_name(sm_fakelib_mode_t mode);
 bool sm_config_parse_fakelib_mode(const char *value, sm_fakelib_mode_t *mode);
 // Persist the mode atomically without changing active mounts.
 bool sm_config_set_title_fakelib_mode(const char *title_id, sm_fakelib_mode_t mode);
+bool sm_config_title_playgo_stub_disabled(const runtime_config_t *cfg,
+                                         const char *title_id);
+bool sm_config_set_title_playgo_stub_enabled(const char *title_id, bool enabled);
 // Compatibility API: enabled selects full, false selects disabled.
 bool sm_config_set_title_fakelib_enabled(const char *title_id, bool enabled);
 

@@ -52,6 +52,7 @@ typedef enum {
 void sm_l10n_init(void);
 bool sm_l10n_parse_language_id(const char *value, int32_t *language_id_out);
 const char *sm_l10n_language_name(int32_t language_id);
+const char *sm_l10n_console_locale(void);
 const char *sm_l10n_get(sm_l10n_key_t key);
 
 #endif

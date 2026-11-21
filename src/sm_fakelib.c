@@ -6,6 +6,7 @@
 #include "sm_filesystem.h"
 #include "sm_gameinfo.h"
 #include "sm_game_lifecycle.h"
+#include "sm_kraken.h"
 #include "sm_log.h"
 #include "sm_mount_diag.h"
 #include "sm_path_utils.h"
@@ -54,8 +55,8 @@ typedef struct {
   char title_id[MAX_TITLE_ID];
   char sandbox_app0_path[MAX_PATH];
   char mount_path[MAX_PATH];
-  // fakelib, /data, /mnt/disc, fonts, and up to three created parents.
-  fakelib_layer_t layers[7u + SANDBOX_USB_ROOT_COUNT + SANDBOX_EXT_ROOT_COUNT];
+  // Fakelib, data, disc, fonts, up to three parents, and two Kraken layers.
+  fakelib_layer_t layers[9u + SANDBOX_USB_ROOT_COUNT + SANDBOX_EXT_ROOT_COUNT];
   size_t layer_count;
   sm_l10n_key_t notification;
   char notification_target[MAX_PATH];
@@ -339,8 +340,12 @@ static bool track_sandbox_layer(const char *title_id,
     return false;
   // unionfs intentionally covers ShellCore's native library mount. An existing
   // unionfs at that same path, however, must be reused or left to its owner.
+  bool cover_read_only_app0 = !overlay &&
+      strncmp(source_path, "/system_ex/app/", 15u) == 0 &&
+      (fs.f_flags & MNT_RDONLY) != 0;
   bool owned = strcmp(fs.f_mntonname, mount_path) != 0 ||
-               (overlay && strcmp(fs.f_fstypename, "unionfs") != 0);
+               (overlay && strcmp(fs.f_fstypename, "unionfs") != 0) ||
+               cover_read_only_app0;
   if (!owned && !sandbox_mount_matches(&fs, source_path, overlay)) {
     log_debug("  [FAKELIB] sandbox mount occupied: %s (%s)", title_id,
               mount_path);
@@ -373,6 +378,41 @@ static bool track_sandbox_layer(const char *title_id,
   layer->mount_fsid = fs.f_fsid;
   layer->mount_identity_valid = true;
   return true;
+}
+
+static bool mount_kraken_package(const char *title_id, const char *cache,
+                                 const char *sandbox_app0) {
+  char source[MAX_PATH], target[MAX_PATH], system_app0[MAX_PATH];
+  struct statfs filesystem;
+  if (!sm_kraken_launch_source(cache, source))
+    return false;
+  // The game may save into app0. The package's parent is mounted separately,
+  // read-only, so the runtime can open the original file by its relative name.
+  if (statfs(sandbox_app0, &filesystem) != 0)
+    return false;
+  if (strcmp(filesystem.f_mntonname, sandbox_app0) != 0) {
+    errno = EAGAIN;
+    return false;
+  }
+  int length = snprintf(target, sizeof(target), "%s/" SM_KRAKEN_PACKAGE_DIR, sandbox_app0);
+  if (length < 0 || (size_t)length >= sizeof(target)) {
+    errno = ENAMETOOLONG;
+    return false;
+  }
+  if ((filesystem.f_flags & MNT_RDONLY) != 0) {
+    snprintf(system_app0, sizeof(system_app0), "/system_ex/app/%s", title_id);
+    size_t previous_layers = g_fakelib_mount.layer_count;
+    if (!track_sandbox_layer(title_id, system_app0, sandbox_app0, "directory", false, 0) &&
+        g_fakelib_mount.layer_count != previous_layers)
+      return false;
+  }
+  char *name = strrchr(source, '/');
+  if (!name || name == source) {
+    errno = EINVAL;
+    return false;
+  }
+  *name = '\0';
+  return track_sandbox_layer(title_id, source, target, "directory", false, MNT_RDONLY);
 }
 
 static bool mount_sandbox_directory(const char *title_id,
@@ -2111,6 +2151,7 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
       sm_config_title_fakelib_mode(&cfg, title_id) != SM_FAKELIB_DISABLED;
   bool managed_title =
       read_mount_link(title_id, managed_game_path, sizeof(managed_game_path));
+  bool kraken = managed_title && sm_kraken_is_cache(managed_game_path);
   char sandbox_app0_path[MAX_PATH] = {0};
   char mount_path[MAX_PATH] = {0};
   bool sandbox_resolved = false;
@@ -2145,7 +2186,12 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
     }
   }
 
-  if (fakelib_enabled) {
+  if (kraken && !sm_kraken_refresh_runtime(
+          managed_game_path, cfg.update_emulators_enabled ? cfg.emulators_path : NULL,
+          !sm_config_title_playgo_stub_disabled(&cfg, title_id)))
+    log_debug("  [FAKELIB] Kraken runtime refresh failed for %s: %s", title_id, strerror(errno));
+
+  if (fakelib_enabled && !kraken) {
     pthread_mutex_lock(&g_fakelib_cache_mutex);
     if (!managed_title && sandbox_resolved &&
         !cleanup_ppr_backport_fakelib(title_id, sandbox_app0_path)) {
@@ -2166,8 +2212,8 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
                                         : sandbox_app0_path;
   bool backport_source = false;
   fakelib_source_kind_t source_kind =
-      fakelib_enabled ? resolve_game_fakelib_source_for_path(
-                            title_id, game_path, true, game_source_path,
+      (fakelib_enabled || kraken) ? resolve_game_fakelib_source_for_path(
+                            title_id, game_path, !kraken, game_source_path,
                             &backport_source)
                       : FAKELIB_SOURCE_NONE;
   bool has_game = source_kind != FAKELIB_SOURCE_NONE;
@@ -2187,7 +2233,11 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
   bool cache_resolved = false;
   bool cache_includes_global = false;
   char cache_path[MAX_PATH];
-  if (has_source) {
+  if (kraken && !has_source) {
+    errno = ENOENT;
+    return false;
+  }
+  if (has_source && !kraken) {
     bool required = false;
     cache_resolved = resolve_cached_fakelib(
         title_id, original_source_path,
@@ -2259,6 +2309,7 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
       !ensure_sandbox_parent(sandbox_app0_path, "/mnt") ||
       !mount_sandbox_directory(title_id, sandbox_app0_path, "/data", 0) ||
       !mount_sandbox_storage_roots(title_id, sandbox_app0_path, false) ||
+      (kraken && !mount_kraken_package(title_id, managed_game_path, sandbox_app0_path)) ||
       !mount_sandbox_fonts(title_id, sandbox_app0_path)) {
     int mount_errno = errno;
     if (!cleanup_fakelib_mount())

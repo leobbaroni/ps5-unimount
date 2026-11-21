@@ -8,7 +8,7 @@ BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 HOMEBREW_ROOT := $(PS5_PAYLOAD_SDK)/target/user/homebrew
 JSON_C_PREFIX := $(CURDIR)/.deps/json-c
 JSON_C_LIB := $(JSON_C_PREFIX)/lib/libjson-c.a
-JSON_C_OBJS := src/sm_api_service.o src/sm_appdb.o src/sm_gameinfo.o src/sm_pkg.o src/sm_config_file.o
+JSON_C_OBJS := src/sm_api_service.o src/sm_appdb.o src/sm_gameinfo.o src/sm_kraken.o src/sm_pkg.o src/sm_config_file.o
 HOMEBREW_CFLAGS := -I$(JSON_C_PREFIX)/include -I$(HOMEBREW_ROOT)/include
 MHD_LIB := $(HOMEBREW_ROOT)/lib/libmicrohttpd.a
 PNG_LIB := $(HOMEBREW_ROOT)/lib/libpng16.a
@@ -36,6 +36,13 @@ ASM_SRCS := src/sm_shellcore_bridge.S
 OBJS := $(SRCS:.c=.o) $(ASM_SRCS:.S=.o)
 HEADERS := $(wildcard include/*.h)
 L10N_CATALOGS := $(wildcard include/lang/*.inc)
+CARGO ?= cargo
+KRAKEN_TARGET := x86_64-unknown-freebsd
+KRAKEN_LIB := kraken-bridge/target/$(KRAKEN_TARGET)/release/libsmp_kraken_bridge.a
+KRAKEN_VENDOR := vendor/kraken
+KRAKEN_AMPR := $(KRAKEN_VENDOR)/vendor/ampr-emu-ng
+KRAKEN_PLAYGO := vendor/pgo_stub
+KRAKEN_SOURCES := $(shell find kraken-bridge/src $(KRAKEN_VENDOR)/crates/kraken-mount-pkg/src -name '*.rs')
 
 # Targets
 all: shadowmountplus.elf
@@ -54,9 +61,17 @@ usb-info.elf: tools/usb_info.c
 	$(PS5_PAYLOAD_SDK)/bin/prospero-strip --strip-all $@
 
 # Build Daemon
-shadowmountplus.elf: $(OBJS) $(KERNEL_SYS_STUB_SO) $(JSON_C_LIB)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(KERNEL_SYS_STUB_SO) $(LIBS)
+shadowmountplus.elf: $(OBJS) $(KERNEL_SYS_STUB_SO) $(JSON_C_LIB) $(KRAKEN_LIB) src/kraken_assets.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/kraken_assets.o $(KERNEL_SYS_STUB_SO) $(KRAKEN_LIB) $(LIBS)
 	$(PS5_PAYLOAD_SDK)/bin/prospero-strip --strip-all $@
+
+$(KRAKEN_LIB): $(KRAKEN_SOURCES) kraken-bridge/Cargo.toml kraken-bridge/Cargo.lock $(KRAKEN_VENDOR)/src/ampr_index.rs $(KRAKEN_VENDOR)/crates/kraken-mount-pkg/Cargo.toml
+	$(CARGO) build --release --locked --target $(KRAKEN_TARGET) --manifest-path kraken-bridge/Cargo.toml
+
+src/kraken_assets.o: src/kraken_assets.S $(KRAKEN_AMPR)/libSceAmpr.sprx $(KRAKEN_AMPR)/SHA256SUMS $(KRAKEN_VENDOR)/REVISION $(KRAKEN_PLAYGO)/libScePlayGo.sprx $(KRAKEN_PLAYGO)/SHA256SUMS
+	cd $(KRAKEN_AMPR) && sha256sum --check --ignore-missing --strict SHA256SUMS
+	cd $(KRAKEN_PLAYGO) && sha256sum --check --strict SHA256SUMS
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(KERNEL_SYS_STUB_SO): $(KERNEL_SYS_STUB_SRCS)
 	test -f "$(PS5_SCE_STUBS_DIR)/libkernel_sys.c"
@@ -74,7 +89,7 @@ src/web_index_asset.c: web/index.html
 src/shell_icon_param_asset.c: assets/shell_icon_param.json
 	xxd -i $< > $@
 
-src/sm_api_service.o src/sm_icon_thumb.o src/sm_gameinfo.o src/sm_pkg.o: CFLAGS += $(HOMEBREW_CFLAGS)
+src/sm_api_service.o src/sm_appdb.o src/sm_icon_thumb.o src/sm_gameinfo.o src/sm_pkg.o: CFLAGS += $(HOMEBREW_CFLAGS)
 src/sm_smb.o src/sm_vfs.o: CFLAGS += $(HOMEBREW_CFLAGS)
 src/main.o src/sm_image_index.o: CFLAGS += -DSHADOWMOUNT_BUILD_TIME=\"$(BUILD_TIME)\"
 src/main.o src/sm_image_index.o: FORCE

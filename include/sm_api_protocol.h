@@ -44,6 +44,7 @@
 #define SM_API_ROUTE_BACKPORT_INSTALL "/api/v1/backports/install"
 #define SM_API_ROUTE_BACKPORT_DELETE "/api/v1/backports/delete"
 #define SM_API_ROUTE_PACKAGE_INSTALL "/api/v1/packages/install"
+#define SM_API_ROUTE_PACKAGE_MOUNT "/api/v1/packages/mount"
 #define SM_API_ROUTE_PACKAGE_QUEUE "/api/v1/packages/queue"
 #define SM_API_ROUTE_PACKAGE_ICON "/api/v1/packages/icon"
 #define SM_API_ROUTE_PACKAGE_STREAM "/api/v1/packages/stream"

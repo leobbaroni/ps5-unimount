@@ -68,8 +68,6 @@ static bool normalize_title_id_value(const char *value,
 static config_load_status_t load_runtime_config_state(runtime_config_state_t *state);
 static bool parse_u32_ini(const char *value, uint32_t *out);
 static bool is_valid_sector_size(uint32_t size);
-static bool add_global_fakelib_exclude_rule(runtime_config_state_t *state,
-                                            const char *value);
 static bool normalize_image_filename_value(const char *value,
                                            char out[MAX_PATH]);
 static bool normalize_absolute_path_value(const char *value,
@@ -461,16 +459,28 @@ bool is_fakelib_excluded_for_title(const char *title_id) {
   return get_fakelib_mode_for_title(title_id) == SM_FAKELIB_DISABLED;
 }
 
-bool sm_config_title_global_fakelib_excluded(const runtime_config_t *cfg,
-                                            const char *title_id) {
-  if (!cfg || !title_id)
+static bool title_id_in_rules(const char ids[][MAX_TITLE_ID], uint32_t count,
+                              const char *title_id) {
+  if (!title_id)
     return false;
 
-  for (uint32_t i = 0; i < cfg->global_fakelib_exclude_title_count; ++i) {
-    if (strcasecmp(cfg->global_fakelib_exclude_title_ids[i], title_id) == 0)
+  for (uint32_t i = 0; i < count; ++i) {
+    if (strcasecmp(ids[i], title_id) == 0)
       return true;
   }
   return false;
+}
+
+bool sm_config_title_global_fakelib_excluded(const runtime_config_t *cfg,
+                                            const char *title_id) {
+  return cfg && title_id_in_rules(cfg->global_fakelib_exclude_title_ids,
+                                  cfg->global_fakelib_exclude_title_count, title_id);
+}
+
+bool sm_config_title_playgo_stub_disabled(const runtime_config_t *cfg,
+                                         const char *title_id) {
+  return cfg && title_id_in_rules(cfg->playgo_stub_off_ids,
+                                  cfg->playgo_stub_off_count, title_id);
 }
 
 bool is_global_fakelib_excluded_for_title(const char *title_id) {
@@ -773,27 +783,18 @@ static bool set_title_fakelib_rule(sm_fakelib_rule_t *rules, uint32_t *count,
   return true;
 }
 
-static bool add_global_fakelib_exclude_rule(runtime_config_state_t *state,
-                                            const char *value) {
+static bool add_title_id_rule(char ids[][MAX_TITLE_ID], uint32_t *count,
+                              const char *value) {
   char normalized[MAX_TITLE_ID];
   if (!normalize_title_id_value(value, normalized))
     return false;
 
-  for (uint32_t i = 0; i < state->cfg.global_fakelib_exclude_title_count;
-       ++i) {
-    if (strcmp(state->cfg.global_fakelib_exclude_title_ids[i], normalized) == 0)
-      return true;
-  }
-
-  if (state->cfg.global_fakelib_exclude_title_count >=
-      MAX_FAKELIB_EXCLUDE_RULES) {
+  if (title_id_in_rules(ids, *count, normalized))
+    return true;
+  if (*count >= MAX_FAKELIB_EXCLUDE_RULES)
     return false;
-  }
 
-  uint32_t index = state->cfg.global_fakelib_exclude_title_count++;
-  (void)strlcpy(state->cfg.global_fakelib_exclude_title_ids[index],
-                normalized,
-                sizeof(state->cfg.global_fakelib_exclude_title_ids[index]));
+  (void)strlcpy(ids[(*count)++], normalized, MAX_TITLE_ID);
   return true;
 }
 
@@ -846,6 +847,13 @@ static bool flatten_documents(const sm_ini_t *main, const sm_ini_t *profiles, sm
         if (!parse_bool_ini(line->value, &excluded)) { errno = EINVAL; return false; }
         if (!excluded) continue;
         key = "global_fakelib_exclude"; strlcpy(value, title, sizeof(value));
+      } else if (!strcasecmp(line->key, "playgo_stub")) {
+        bool enabled;
+        if (!strcasecmp(line->value, "default")) continue;
+        if (!parse_bool_ini(line->value, &enabled)) { errno = EINVAL; return false; }
+        if (enabled) continue;
+        key = "playgo_stub_off";
+        strlcpy(value, title, sizeof(value));
       }
     } else if (!strncasecmp(line->section, "image:", 6)) {
       char filename[MAX_PATH];
@@ -1171,11 +1179,16 @@ static config_load_status_t parse_runtime_config_state(runtime_config_state_t *s
       continue;
     }
 
-    if (strcasecmp(key, "global_fakelib_exclude") == 0 ||
+    bool playgo_rule = strcasecmp(key, "playgo_stub_off") == 0;
+    if (playgo_rule || strcasecmp(key, "global_fakelib_exclude") == 0 ||
         strcasecmp(key, "global_fakelib_exclude_title") == 0) {
-      if (!add_global_fakelib_exclude_rule(state, value)) {
+      char (*ids)[MAX_TITLE_ID] = playgo_rule ? state->cfg.playgo_stub_off_ids
+                                           : state->cfg.global_fakelib_exclude_title_ids;
+      uint32_t *count = playgo_rule ? &state->cfg.playgo_stub_off_count
+                                    : &state->cfg.global_fakelib_exclude_title_count;
+      if (!add_title_id_rule(ids, count, value)) {
         invalid = true;
-        log_debug("  [CFG] invalid global fakelib exclude rule at line %d: "
+        log_debug("  [CFG] invalid title rule at line %d: "
                   "%s=%s",
                   line_no, key, value);
       }
@@ -1537,6 +1550,9 @@ static bool save_document(sm_ini_t *main, sm_ini_t *profiles, bool individual, b
       dst->global_fakelib_exclude_title_count = src->global_fakelib_exclude_title_count;
       memcpy(dst->global_fakelib_exclude_title_ids, src->global_fakelib_exclude_title_ids,
              sizeof(dst->global_fakelib_exclude_title_ids));
+      dst->playgo_stub_off_count = src->playgo_stub_off_count;
+      memcpy(dst->playgo_stub_off_ids, src->playgo_stub_off_ids,
+             sizeof(dst->playgo_stub_off_ids));
       memcpy(g_runtime_state.image_mode_rules, g_runtime_parse_state.image_mode_rules,
              sizeof(g_runtime_state.image_mode_rules));
     }
@@ -1549,19 +1565,18 @@ static bool save_document(sm_ini_t *main, sm_ini_t *profiles, bool individual, b
   return ok;
 }
 
-static bool write_title_fakelib_policy(const char *title_id, sm_fakelib_mode_t mode, bool global_only) {
+static bool write_title_profile_setting(const char *title_id, const char *key,
+                                        const char *value) {
   char title[MAX_TITLE_ID], section[MAX_TITLE_ID + 8];
-  if (!normalize_title_id_value(title_id, title) || !is_supported_game_title_id(title) || !sm_config_fakelib_mode_name(mode)) {
+  if (!normalize_title_id_value(title_id, title) || !is_supported_game_title_id(title)) {
     errno = EINVAL; return false;
   }
   snprintf(section, sizeof(section), "game:%s", title);
   ensure_runtime_config_ready();
   pthread_mutex_lock(&g_config_file_mutex);
   sm_ini_t main = {0}, profiles = {0};
-  const char *value = global_only ? (mode == SM_FAKELIB_DISABLED ? "on" : NULL)
-      : mode == SM_FAKELIB_DEFAULT ? NULL : sm_config_fakelib_mode_name(mode);
   bool ok = read_documents(&main, &profiles) &&
-      sm_ini_set(&profiles, section, global_only ? "ignore_global_fakelib" : "fakelib", value) &&
+      sm_ini_set(&profiles, section, key, value) &&
       save_document(&main, &profiles, true, false);
   int error = errno;
   sm_ini_free(&main); sm_ini_free(&profiles);
@@ -1640,13 +1655,24 @@ int sm_config_smb_update(const char *previous, const sm_smb_connection_t *connec
 }
 
 bool sm_config_set_title_fakelib_mode(const char *title_id, sm_fakelib_mode_t mode) {
-  return write_title_fakelib_policy(title_id, mode, false);
+  const char *value = sm_config_fakelib_mode_name(mode);
+  if (!value) {
+    errno = EINVAL;
+    return false;
+  }
+  return write_title_profile_setting(title_id, "fakelib",
+                                     mode == SM_FAKELIB_DEFAULT ? NULL : value);
 }
 
 bool sm_config_set_title_global_fakelib_excluded(const char *title_id,
                                                 bool excluded) {
-  return write_title_fakelib_policy(
-      title_id, excluded ? SM_FAKELIB_DISABLED : SM_FAKELIB_DEFAULT, true);
+  return write_title_profile_setting(title_id, "ignore_global_fakelib",
+                                     excluded ? "on" : NULL);
+}
+
+bool sm_config_set_title_playgo_stub_enabled(const char *title_id, bool enabled) {
+  return write_title_profile_setting(title_id, "playgo_stub",
+                                     enabled ? NULL : "off");
 }
 
 bool sm_config_set_title_fakelib_enabled(const char *title_id, bool enabled) {

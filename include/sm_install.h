@@ -11,6 +11,12 @@ bool sm_install_register_title_dir(const char *title_id,
                                    const char *install_dir,
                                    int *result_out);
 
+// Stage and register one explicitly selected game using the regular TitleDir flow.
+// The caller owns the scanner and launch mutation guards.
+bool sm_install_mount_game(const char *source, const char *title_id,
+                           const char *title_name, bool already_registered,
+                           bool refresh_metadata);
+
 // Install or remount the collected scan candidates.
 void process_scan_candidates(const scan_candidate_t *candidates,
                              int candidate_count);

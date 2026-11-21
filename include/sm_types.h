@@ -165,6 +165,8 @@ typedef struct runtime_config {
   sm_fakelib_rule_t fakelib_rules[MAX_FAKELIB_EXCLUDE_RULES];
   uint32_t global_fakelib_exclude_title_count;
   char global_fakelib_exclude_title_ids[MAX_FAKELIB_EXCLUDE_RULES][MAX_TITLE_ID];
+  uint32_t playgo_stub_off_count;
+  char playgo_stub_off_ids[MAX_FAKELIB_EXCLUDE_RULES][MAX_TITLE_ID];
   uint32_t scan_depth;
   uint32_t scan_interval_us;
   uint32_t stability_wait_seconds;

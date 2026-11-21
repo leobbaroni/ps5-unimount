@@ -3,6 +3,7 @@
 #include "sm_runtime.h"
 #include "sm_filesystem.h"
 #include "sm_gameinfo.h"
+#include "sm_kraken.h"
 #include "sm_config_mount.h"
 #include "sm_limits.h"
 #include "sm_log.h"
@@ -1526,9 +1527,12 @@ static bool cleanup_mount_links_entry(const char *title_id,
   }
 
   if (!should_remove) {
+    char package[MAX_PATH];
+    bool kraken = sm_kraken_source(source_path, package);
     if (ctx->match_usb_sources) {
       matches_removed_source =
           is_usb_storage_path(source_path) ||
+          (kraken && is_usb_storage_path(package)) ||
           (has_image_source && is_usb_storage_path(image_source_path));
       if (!matches_removed_source)
         return true;
@@ -1536,6 +1540,7 @@ static bool cleanup_mount_links_entry(const char *title_id,
     } else if (ctx->removed_source_root && ctx->removed_source_root[0] != '\0') {
       matches_removed_source =
           path_matches_root_or_child(source_path, ctx->removed_source_root) ||
+          (kraken && path_matches_root_or_child(package, ctx->removed_source_root)) ||
           (has_image_source &&
            path_matches_root_or_child(image_source_path,
                                       ctx->removed_source_root));

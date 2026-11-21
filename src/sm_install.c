@@ -17,6 +17,7 @@
 #include "sm_paths.h"
 #include "sm_manual.h"
 #include "sm_shellcore_hooks.h"
+#include "sm_kraken.h"
 
 #include <dlfcn.h>
 
@@ -96,8 +97,23 @@ static bool is_appmeta_file(const char *name) {
           strcasecmp(ext, ".at9") == 0);
 }
 
+static bool allow_metadata_read(const char *path, const struct stat *st) {
+  const mode_t wanted = S_IRUSR | S_IRGRP | S_IROTH;
+  return (st->st_mode & wanted) == wanted ||
+      chmod(path, (st->st_mode & 07777) | wanted) == 0;
+}
+
+static bool copy_metadata_file(const char *src, const char *dst, bool readable) {
+  if (copy_file(src, dst) != 0)
+    return false;
+  if (!readable)
+    return true;
+  struct stat st;
+  return lstat(dst, &st) == 0 && S_ISREG(st.st_mode) && allow_metadata_read(dst, &st);
+}
+
 static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
-                                    const char *user_appmeta_dir) {
+                                    const char *user_appmeta_dir, bool readable) {
   if (should_stop_requested() || runtime_sleep_mode_active()) {
     errno = ECANCELED;
     return false;
@@ -147,7 +163,7 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
     }
     lowercase_sce_sys_name(dst_path + strlen(user_appmeta_dir) + 1);
     errno = 0;
-    if (copy_file(src_path, dst_path) != 0) {
+    if (!copy_metadata_file(src_path, dst_path, readable)) {
       error = errno != 0 ? errno : EIO;
       break;
     }
@@ -163,7 +179,8 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
 
 static bool copy_optional_trophy_metadata_file(const char *src_sce_sys,
                                                const char *dst_base,
-                                               const char *relative_path) {
+                                               const char *relative_path,
+                                               bool readable) {
   if (should_stop_requested() || runtime_sleep_mode_active()) {
     errno = ECANCELED;
     return false;
@@ -187,9 +204,9 @@ static bool copy_optional_trophy_metadata_file(const char *src_sce_sys,
     errno = ENAMETOOLONG;
     return false;
   }
-  if (stat(dst_path, &st) == 0) {
+  if ((readable ? lstat(dst_path, &st) : stat(dst_path, &st)) == 0) {
     if (S_ISREG(st.st_mode))
-      return true;
+      return !readable || allow_metadata_read(dst_path, &st);
     errno = EINVAL;
     return false;
   }
@@ -197,7 +214,7 @@ static bool copy_optional_trophy_metadata_file(const char *src_sce_sys,
     return false;
 
   errno = 0;
-  if (copy_file(src_path, dst_path) == 0)
+  if (copy_metadata_file(src_path, dst_path, readable))
     return true;
 
   int error = errno != 0 ? errno : EIO;
@@ -208,7 +225,7 @@ static bool copy_optional_trophy_metadata_file(const char *src_sce_sys,
 }
 
 static bool update_trophy_metadata(const char *title_id,
-                                   const char *src_sce_sys) {
+                                   const char *src_sce_sys, bool readable) {
   if (should_stop_requested() || runtime_sleep_mode_active()) {
     errno = ECANCELED;
     return false;
@@ -226,11 +243,11 @@ static bool update_trophy_metadata(const char *title_id,
 
   if (strncmp(title_id, "CUSA", 4u) == 0) {
     return copy_optional_trophy_metadata_file(src_sce_sys, dst_base,
-                                              "npbind.dat") &&
+                                              "npbind.dat", readable) &&
            copy_optional_trophy_metadata_file(src_sce_sys, dst_base,
-                                              "nptitle.dat") &&
+                                              "nptitle.dat", readable) &&
            copy_optional_trophy_metadata_file(src_sce_sys, dst_base,
-                                              "param.sfo");
+                                              "param.sfo", readable);
   }
 
   written = snprintf(dst_dir, sizeof(dst_dir), "%s/trophy2", dst_base);
@@ -247,10 +264,10 @@ static bool update_trophy_metadata(const char *title_id,
   mkdir(dst_dir, 0755);
 
   return copy_optional_trophy_metadata_file(src_sce_sys, dst_base,
-                                            "trophy2/npbind.dat") &&
+                                            "trophy2/npbind.dat", readable) &&
          copy_optional_trophy_metadata_file(src_sce_sys, dst_base,
-                                            "uds/npbind.dat") &&
-         copy_optional_trophy_metadata_file(src_sce_sys, dst_base, "param.json");
+                                            "uds/npbind.dat", readable) &&
+         copy_optional_trophy_metadata_file(src_sce_sys, dst_base, "param.json", readable);
 }
 
 static void update_registered_title_snd0info(const char *title_id) {
@@ -265,6 +282,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
                               const char *title_name, bool is_remount,
                               bool should_register,
                               bool use_app_install_all,
+                              bool refresh_metadata,
                               bool *has_src_snd0_out) {
   char user_appmeta_dir[MAX_PATH];
   char user_app_dir[MAX_PATH];
@@ -301,8 +319,9 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     log_debug("  [REG] appmeta missing, restaging metadata only: %s", title_id);
   }
 
-  restage_staging = (!is_remount || should_register);
-  restage_appmeta = (!is_remount || appmeta_missing);
+  const bool kraken = sm_kraken_is_cache(src_path);
+  restage_staging = !is_remount || should_register || refresh_metadata;
+  restage_appmeta = !is_remount || appmeta_missing || refresh_metadata;
 
   if (should_stop_requested() || runtime_sleep_mode_active())
     return false;
@@ -338,7 +357,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   if (restage_appmeta) {
     mkdir(APPMETA_BASE, 0777);
     mkdir(user_appmeta_dir, 0777);
-    if (!copy_sce_sys_to_appmeta(src_sce_sys, user_appmeta_dir)) {
+    if (!copy_sce_sys_to_appmeta(src_sce_sys, user_appmeta_dir, kraken)) {
       log_debug("  [COPY] Failed to copy appmeta files: %s -> %s", src_sce_sys,
                 user_appmeta_dir);
       return false;
@@ -346,7 +365,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     metadata_restaged = true;
   }
 
-  if (!update_trophy_metadata(title_id, src_sce_sys))
+  if (!update_trophy_metadata(title_id, src_sce_sys, kraken))
     return false;
 
   if (should_stop_requested() || runtime_sleep_mode_active())
@@ -437,6 +456,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
       notify_system_l10n(SM_L10N_REGISTER_FAILED_UNAVAILABLE, title_name,
                          title_id);
     }
+    errno = EIO;
     return false;
   }
   mark_register_attempted(title_id);
@@ -458,9 +478,29 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     log_debug("  [REG] FAIL: 0x%x", res);
     notify_system_l10n(SM_L10N_REGISTER_FAILED_CODE, title_name, title_id,
                        (uint32_t)res);
+    errno = EIO;
     return false;
   }
 
+  return true;
+}
+
+bool sm_install_mount_game(const char *source, const char *title_id,
+                           const char *title_name, bool already_registered,
+                           bool refresh_metadata) {
+  errno = 0;
+  if (!mount_and_install(source, title_id, title_name, already_registered,
+                         !already_registered, false, refresh_metadata, NULL)) {
+    if (errno == 0)
+      errno = EIO;
+    return false;
+  }
+  if (should_stop_requested() || runtime_sleep_mode_active()) {
+    errno = ECANCELED;
+    return false;
+  }
+  clear_failed_mount_attempts(title_id);
+  cache_game_entry(source, title_id, title_name);
   return true;
 }
 
@@ -495,7 +535,7 @@ void process_scan_candidates(const scan_candidate_t *candidates,
 
     bool mounted = mount_and_install(c->path, c->title_id, c->title_name,
                                      c->installed, !c->in_app_db,
-                                     use_app_install_all, &has_src_snd0);
+                                     use_app_install_all, false, &has_src_snd0);
     if (runtime_sleep_mode_active())
       return;
 

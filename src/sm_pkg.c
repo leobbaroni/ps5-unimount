@@ -388,7 +388,8 @@ static bool parse_param_json(const uint8_t *data, size_t size,
                   json_object_get_string(value));
     struct json_object *localized = NULL;
     if (json_object_object_get_ex(root, "localizedParameters", &localized) &&
-        json_object_is_type(localized, json_type_object)) {
+        json_object_is_type(localized, json_type_object) &&
+        !sm_gameinfo_console_title(localized, candidate->title_name)) {
       struct json_object *language = NULL;
       const char *preferred = NULL;
       if (json_object_object_get_ex(localized, "defaultLanguage", &language) &&
@@ -505,6 +506,7 @@ static bool parse_package(const char *path, const struct stat *st,
   candidate->source_ctime_ns = st->st_ctim.tv_nsec;
   candidate->outer_content_type = outer_content_type;
   candidate->outer_content_flags = outer_content_flags;
+  candidate->is_lih = magic == PKG_MAGIC_LIH;
   size_t content_length = 0;
   while (content_length < 36 && header[0x40u + content_length] != '\0')
     content_length++;
@@ -528,7 +530,7 @@ static bool parse_package(const char *path, const struct stat *st,
   candidate->content_type = be32(header + 0x74);
   candidate->content_flags = be32(header + 0x78);
   uint32_t container_type = be32(header + 4);
-  bool delta = magic == PKG_MAGIC_LIH || (container_type & 0xFFu) == 0x1Eu ||
+  bool delta = candidate->is_lih || (container_type & 0xFFu) == 0x1Eu ||
                (container_type & 0xFF000000u) == 0x41000000u;
   bool patch_category = strcasecmp(candidate->category, "gp") == 0 ||
                         strcasecmp(candidate->category, "gpd") == 0 ||

@@ -11,9 +11,11 @@ version = 2
 # [game:PPSA13197]
 # fakelib = emulators
 # ignore_global_fakelib = on
+# playgo_stub = off
 
 # fakelib: default, full, emulators, disabled.
 # ignore_global_fakelib: on/off/default (default is off).
+# playgo_stub: on/off/default for Kraken-mounted PKGs (default is on).
 # [game:CUSA27145]
 # fakelib = full
 

@@ -280,6 +280,17 @@ static void test_editing(void) {
   assert(sm_config_set_title_global_fakelib_excluded("PPSA13197", false));
   assert(get_fakelib_mode_for_title("PPSA13197") == SM_FAKELIB_FULL);
   assert(!is_global_fakelib_excluded_for_title("PPSA13197"));
+  assert(sm_config_set_title_playgo_stub_enabled("PPSA13197", false));
+  runtime_config_t cfg = runtime_config();
+  assert(sm_config_title_playgo_stub_disabled(&cfg, "ppsa13197"));
+  assert(!sm_config_title_playgo_stub_disabled(&cfg, "PPSA12345"));
+  assert(load_runtime_config());
+  cfg = runtime_config();
+  assert(sm_config_title_playgo_stub_disabled(&cfg, "PPSA13197"));
+  assert(sm_config_set_title_playgo_stub_enabled("PPSA13197", true));
+  assert(load_runtime_config());
+  cfg = runtime_config();
+  assert(!sm_config_title_playgo_stub_disabled(&cfg, "PPSA13197"));
   assert(sm_config_write_web_settings(false, true, true, false, false, 300,
       true, 0, NULL, 0, SM_FAKELIB_FULL));
   data = get_file(CONFIG_FILE);

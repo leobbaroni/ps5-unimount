@@ -6,7 +6,7 @@ struct statfs {
 };
 
 static bool storage_mounted = true, stat_failed, statfs_failed;
-static const char *image_source;
+static const char *image_source, *package_source;
 static const char *scan_roots[] = SM_DEFAULT_SCAN_PATHS_INITIALIZER;
 
 static int test_stat(const char *path, struct stat *st) {
@@ -35,6 +35,13 @@ static bool read_mount_image_link(const char *title_id, char *out, size_t size) 
   if (!image_source)
     return false;
   strlcpy(out, image_source, size);
+  return true;
+}
+
+static bool sm_kraken_source(const char *cache, char out[MAX_PATH]) {
+  if (!package_source || strcmp(cache, "/data/shadowmount/kraken/PPSA28416") != 0)
+    return false;
+  strlcpy(out, package_source, MAX_PATH);
   return true;
 }
 
@@ -100,6 +107,12 @@ int main(void) {
   image_source = "/mnt/usb0/homebrew/Game.ffpfsc";
   assert(title_is_usb_backed("PPSA28416", m2_game, true));
   image_source = NULL;
+
+  const char *kraken_cache = "/data/shadowmount/kraken/PPSA28416";
+  package_source = "/mnt/usb0/homebrew/Game.pkg";
+  assert(title_is_usb_backed("PPSA28416", kraken_cache, true));
+  package_source = "/mnt/ext1/homebrew/Game.pkg";
+  assert(!title_is_usb_backed("PPSA28416", kraken_cache, true));
 
   assert(destination_is_managed("/mnt/ext1/homebrew"));
   assert(destination_is_managed(m2_game));

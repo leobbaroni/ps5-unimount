@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 
+struct json_object;
+
+// Copy a title from localizedParameters using the console language.
+bool sm_gameinfo_console_title(struct json_object *localized, char *out_name);
 // Read title ID and title name from a mounted game directory.
 bool get_game_info(const char *base_path, const struct stat *param_st,
                    char *out_id, char *out_name);
