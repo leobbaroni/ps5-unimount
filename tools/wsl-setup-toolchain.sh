@@ -4,13 +4,14 @@
 #   wsl -d Ubuntu -u root -- bash /mnt/c/Users/TugaPlayz/Desktop/GITHUB/ps5-unimount/tools/wsl-setup-toolchain.sh
 #
 # Installs:
-#   - apt build deps (ShadowMountPlus CI list; clang/lld/llvm 21 instead of 18, see SMP_LLVM below)
+#   - apt build deps (ShadowMountPlus CI list, with the distro's clang/lld/llvm 21 instead of 18;
+#     the SDK's prospero-llvm-config picks the newest llvm-config-NN on PATH)
 #   - ps5-payload-sdk (git HEAD, pacbrew-repo/sdk PKGBUILD) at /opt/ps5-payload-sdk, owned by pacman
 #   - pacbrew libs into /opt/ps5-payload-sdk/target/user/homebrew via makepkg + pacman, as SMP CI does:
 #     openlibm zlib libpng libmicrohttpd libjpeg-turbo sqlite libsmb2
 #   - Kraken Mount toolchain (ps5/Dockerfile): pinned SDK v0.43 zip at /opt/ps5-payload-sdk-0.43,
 #     SQLite amalgamation 3.46.1 at /opt/sqlite, rustup 1.99.0 + rust-src (patched by
-#     ps5/prepare-rust-std.py), clang-19/lld-19/llvm-19 (KM_LLVM below)
+#     ps5/prepare-rust-std.py); clang-18/19 only with INSTALL_UPSTREAM_CLANGS=1 (clang 21 works)
 #
 # Idempotent: already-installed pieces are skipped. REBUILD_PACBREW=1 rebuilds all pacbrew packages
 # (the sdk package always tracks git HEAD at build time).
@@ -36,14 +37,20 @@ log "apt packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 # SMP CI list (clang-18/lld-18 replaced by the distro's clang 21) + makepkg's fakeroot,
-# + clang-19/lld-19/llvm-19 for Kraken Mount (its Dockerfile), + unzip/wget/ca-certificates.
+# + unzip/wget/ca-certificates.
 # tcl: pacbrew sqlite's `make sqlite3.h libsqlite3.la` needs tclsh (preinstalled on GitHub runners).
 # nodejs: Kraken Mount CI's `node --check` of the UI script.
+# libjson-c-dev: SMP tools/test_runtime_config.py compiles against host json-c via pkg-config.
 apt-get install -y -qq --no-install-recommends \
   autoconf automake build-essential clang-21 lld-21 llvm-21 cmake curl git libarchive-tools \
   libtool makepkg meson nasm pacman-package-manager patch pkg-config python3 python3-yaml xxd zip \
-  unzip wget ca-certificates fakeroot file tcl nodejs \
-  clang-19 lld-19 llvm-19 >/dev/null
+  unzip wget ca-certificates fakeroot file tcl nodejs libjson-c-dev >/dev/null
+# The upstream recipes' own compilers (SMP CI: clang-18; Kraken Dockerfile: clang-19) are optional:
+# both payloads build with clang 21. INSTALL_UPSTREAM_CLANGS=1 installs 18 and 19 so the build
+# script can use SMP_LLVM=18 / KM_LLVM=19 for recipe-exact compilers.
+if [[ ${INSTALL_UPSTREAM_CLANGS:-0} == 1 ]]; then
+  apt-get install -y -qq --no-install-recommends clang-18 lld-18 llvm-18 clang-19 lld-19 llvm-19 >/dev/null
+fi
 
 git config --global core.autocrlf false
 git config --global --get-all safe.directory | grep -qx '\*' || git config --global --add safe.directory '*'
@@ -144,7 +151,7 @@ RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN python3 "$UPSTREAM/kraken-mount/ps5/prepare-rus
 
 log "versions"
 clang-21 --version | head -1
-clang-19 --version | head -1
+command -v clang-19 >/dev/null && clang-19 --version | head -1
 pacman -Q
 RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN rustc -V
 RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN cargo -V
