@@ -1,6 +1,7 @@
 # Hardware test log
 
-Everything below was run on one console on 2026-11-21. Results are stated as observed; anything
+Everything below was run on one console on 2026-11-21. The two game titles used as test content are
+referred to as Title A and Title B; their title ids are replaced in quoted log lines. Results are stated as observed; anything
 not observed is listed under "Not validated".
 
 ## Environment
@@ -13,7 +14,7 @@ not observed is listed under "Not validated".
 | Other payloads running | BFpilot 0.4.4, Orbit Store 1.9.2 | PLDMGR process list |
 | ShellCore hooks | installed, registration path `shellcore_bridge` | `GET /api/v1/system` |
 | Build under test | UniMount 0.1.0, clang 18, commit `c65ba80` (engine with review fixes) | `POST /api/v1/version` |
-| Test content | LEGO Batman: Legacy of the Dark Knight, 34.1 GB plaintext debug `.pkg` (PPSA16833); Hades II, 9.6 GB `.exfat` (PPSA36082); Orbit Store app, 217 MB `.ffpkg` (PPSA99177); all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
+| Test content | Title A, a 34.1 GB plaintext debug `.pkg`; Title B, a 9.6 GB `.exfat` image; the Orbit Store app, a 217 MB `.ffpkg` (PPSA99177); all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
 
 Launches were started and closed over the LAN, first with the test-only helper in `tools/hwtest/`
 and later with UniMount's own `POST /api/v1/games/launch` and `/close`. A launch counts as
@@ -24,16 +25,16 @@ were not checked.
 
 ## Results
 
-### A. LEGO Batman from a debug `.pkg` (Kraken path) — pass
+### A. Title A from a debug `.pkg` (Kraken path) — pass
 
 1. With no mount payload running, UniMount started, found the `.pkg` after the stability wait and
    adopted the title that Kraken Mount had registered:
-   `[AUTO] building PPSA16833 …`, `[TAKEOVER] PPSA16833: adopting the title registered by Kraken Mount`,
-   `[KRAKEN] cache ready … -> /data/shadowmount/kraken/PPSA16833` (5 s),
-   `[SHELLCORE] AppInstallAll bridge consumed: PPSA16833 result=0x00000000`.
+   `[AUTO] building <TITLE_A> …`, `[TAKEOVER] <TITLE_A>: adopting the title registered by Kraken Mount`,
+   `[KRAKEN] cache ready … -> /data/shadowmount/kraken/<TITLE_A>` (5 s),
+   `[SHELLCORE] AppInstallAll bridge consumed: <TITLE_A> result=0x00000000`.
    The source stayed a single 34.1 GB file; nothing was extracted beyond the small cache.
 2. Launch: `launch mount ready`, `fakelib2 mounted … -> …/common/lib`,
-   `/data/homebrew -> /mnt/sandbox/PPSA16833_000/app0/kraken`, `[GAME] started: PPSA16833 pid=114`.
+   `/data/homebrew -> /mnt/sandbox/<TITLE_A>_000/app0/kraken`, `[GAME] started: <TITLE_A> pid=114`.
    The process held about 3.0 GB and stayed alive for 75 s; the kernel-log monitor reported no
    loader error or fatal signal in its 60 s window.
 3. Launch record: `outcome: running` after 20 s, every stage `ok`, `required_firmware 9.00` against
@@ -41,10 +42,10 @@ were not checked.
 4. Close: all eight sandbox layers unmounted, `runtime layers released`.
 5. Repeated on the final engine build and again after the takeover in test F: same result.
 
-### B. Hades II from an `.exfat` image (ShadowMountPlus path) — pass
+### B. Title B from an `.exfat` image (ShadowMountPlus path) — pass
 
 Launch mounted the image through LVD on demand (`Attached as /dev/lvd1`, `nullfs mounted … ->
-/system_ex/app/PPSA36082`), the process started (about 8 GB) and ran for 45 s; closing released the
+/system_ex/app/<TITLE_B>`), the process started (about 8 GB) and ran for 45 s; closing released the
 layers and detached the image (`unmount complete … error=0`). Repeated through the API route and
 while PKG Manager was running.
 
@@ -55,10 +56,10 @@ while PKG Manager was running.
   Kraken Mount running alone nothing mounts it.
 - Under UniMount the app launched from the `.ffpkg` and ran (process alive, `outcome: running`),
   and closed cleanly. Orbit Store's own service (port 34177) answered throughout every test.
-- UniMount's Kraken-compatible listener on port 8097 reported the LEGO Batman package in Kraken's
+- UniMount's Kraken-compatible listener on port 8097 reported the Title A package in Kraken's
   `/api/state` schema with `status: "ready"` and the package path.
 - Not validated: an actual Orbit Store download and hand-over. Its API requires device pairing, and
-  its stored install record for LEGO Batman still read "Waiting for Kraken Mount" because it had
+  its stored install record for Title A still read "Waiting for Kraken Mount" because it had
   stopped polling before UniMount started. Opening Orbit Store on the console should refresh it.
 
 ### D. PS5 Payload Manager — pass
@@ -79,7 +80,7 @@ while PKG Manager was running.
 
 PKG Manager 1.5.1 was installed from PLDMGR's official repository and started beside UniMount. Its
 helper went through elfldr and registered its home-screen tile, its API answered (version, storage,
-empty package list), UniMount launched Hades II while it ran, and UniMount's library and listeners
+empty package list), UniMount launched Title B while it ran, and UniMount's library and listeners
 were unchanged after it was stopped. An actual package installation could not be tested: kstuff-lite
 does not support installing debug packages above firmware 11.60, which is the reason `.pkg` titles
 go through the Kraken path.
@@ -91,9 +92,9 @@ go through the Kraken path.
   `port 8097 busy … not started`; UniMount logged `[COMPAT] refused POST /api/quit from 127.0.0.1`
   and stayed the owner.
 - UniMount started while real Kraken Mount ran: `[TAKEOVER] Kraken Mount 0.3.1 accepted quit (HTTP 204)`,
-  `port 8097 released`, `released legacy Kraken mount: /system_ex/app/PPSA16833`,
+  `port 8097 released`, `released legacy Kraken mount: /system_ex/app/<TITLE_A>`,
   `legacy Kraken mounts: released=1 left=0`; Kraken's log shows `quit requested by a newer copy`.
-  LEGO Batman then launched from UniMount's own mount.
+  Title A then launched from UniMount's own mount.
 - Clean stop (SIGTERM from PLDMGR) removed `owner.json`.
 
 ### G. Interface and browser

@@ -71,7 +71,7 @@ reported as working until its process is seen running.
 
 ## Evidence on Hand
 
-- The owner's console: LEGO Batman as a 34 GB debug `.pkg`, Hades II as an exFAT image, and Orbit
+- The owner's console: one game as a 34 GB debug `.pkg`, one as a 9.6 GB exFAT image, and Orbit
   Store's `.ffpkg` app. Real titles, real sizes, real error-history entries (for example
   CE-107750-0, CE-105779-9).
 - The incumbent ShadowMountPlus interface at `web/index.html` and its API description in
