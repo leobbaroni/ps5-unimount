@@ -156,21 +156,20 @@
   .library.compact .actions .btn { min-height: 2.75rem; margin-bottom: .375rem; }
   .facts { margin-top: .5rem; font-size: 1.375rem; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .facts .sep { margin: 0 .5rem; color: var(--ink-2); font-weight: 400; }
-  .tracker { display: flex; margin: 1rem 0 0; padding: 0; list-style: none; }
-  .stage { width: 6.25rem; margin-right: .375rem; text-align: center; }
-  [dir="rtl"] .stage { margin-right: 0; margin-left: .375rem; }
-  .seg { display: flex; align-items: center; justify-content: center; height: 1.5rem; border: 2px solid var(--ink); border-radius: 4px; background: rgba(0,0,0,.45); color: #000; }
-  .seg .i { width: 1.1rem; height: 1.1rem; stroke-width: 2.5; }
-  .stage.done .seg { background: var(--ink); }
-  .stage.failed .seg { background: var(--red); border-color: var(--red); color: #fff; }
-  .stage.pending .seg, .stage.lazy .seg { color: var(--ink); background: rgba(0,0,0,.45); }
-  .stage.pending .seg { color: var(--ink); background: rgba(0,0,0,.55); border-style: dashed; }
-  .stage.pending .seg .i { stroke-width: 2.5; }
-  .stage.skip .seg { border-style: dashed; border-color: var(--line-soft); color: var(--ink-2); }
-  .stage.none .seg { border-color: var(--ink-3); }
-  .stage-label { display: block; margin-top: .375rem; font-size: 1rem; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tracker { display: flex; flex-wrap: wrap; margin: .875rem 0 0; padding: 0; list-style: none; }
+  .stage { display: flex; align-items: center; min-height: 1.75rem; margin-right: 1.5rem; white-space: nowrap; }
+  [dir="rtl"] .stage { margin-right: 0; margin-left: 1.5rem; }
+  /* A stage is a mark and a word. Only a failure gets a filled mark. */
+  .seg { display: flex; align-items: center; justify-content: center; flex: none; width: 1.25rem; height: 1.25rem; margin-right: .375rem; border-radius: 3px; color: var(--ink); }
+  [dir="rtl"] .seg { margin-right: 0; margin-left: .375rem; }
+  .seg .i { width: 1.25rem; height: 1.25rem; stroke-width: 2.5; }
+  .failed > .seg { background: var(--red); color: #fff; }
+  .failed > .seg .i { width: 1rem; height: 1rem; stroke-width: 3; }
+  .skip > .seg, .none > .seg { color: var(--ink-3); }
+  .stage-label { font-size: 1rem; color: var(--ink-2); }
   .stage.done .stage-label, .stage.failed .stage-label, .stage.pending .stage-label { color: var(--ink); }
-  .stage-note { display: block; font-size: 1rem; line-height: 1.2; color: var(--ink); overflow-wrap: anywhere; }
+  .stage-note { font-size: 1rem; color: var(--ink); }
+  .stage-note::before { content: "·"; margin: 0 .375rem; color: var(--ink-3); }
   .state-sentence { margin-top: .625rem; font-size: 1.25rem; line-height: 1.3; max-width: 44rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .state-sentence .code { display: inline-block; padding: 0 .375rem; border-radius: 4px; background: var(--red); color: #fff; font-weight: 700; }
   .actions { display: flex; flex-wrap: wrap; margin-top: 1rem; }
@@ -300,13 +299,8 @@
   .log-view { margin: 0; padding: 1rem; height: 26rem; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius); background: rgba(0,0,0,.6); font-family: var(--mono); font-size: .875rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
   .stage-list { margin: 0; padding: 0; list-style: none; }
   .stage-list li { display: flex; align-items: center; min-height: 2.5rem; border-bottom: 1px solid rgba(255,255,255,.12); }
-  .stage-list .seg { width: 3rem; flex: none; margin-right: 1rem; }
-  [dir="rtl"] .stage-list .seg { margin-right: 0; margin-left: 1rem; }
-  .stage-list li.done .seg { background: var(--ink); }
-  .stage-list li.failed .seg { background: var(--red); border-color: var(--red); color: #fff; }
-  .stage-list li.pending .seg { color: var(--ink); border-style: dashed; }
-  .stage-list li.neutral .seg { color: var(--ink); border-color: var(--ink-2); }
-  .stage-list li.none .seg { border-color: var(--ink-3); }
+  .stage-list .seg { margin-right: .75rem; }
+  [dir="rtl"] .stage-list .seg { margin-right: 0; margin-left: .75rem; }
   .stage-list .when { margin-left: auto; color: var(--ink-2); font-variant-numeric: tabular-nums; padding-left: 1rem; }
   .evidence { margin: .5rem 0 0; padding: 0 0 0 1.25rem; }
   .evidence li { margin: .25rem 0; }
@@ -410,10 +404,8 @@
     .hero-title, .hero-title.long, .hero-title.longer, .hero-title.longer2 { font-size: 2.25rem !important; }
     .library { overflow: visible; }
     .facts { font-size: 1rem; white-space: normal; }
-    .tracker { flex-wrap: nowrap; }
-    .stage { flex: 1 1 0; width: auto; min-width: 0; }
-    .stage-label { font-size: .75rem; }
-    .stage-note { font-size: .8125rem; white-space: normal; }
+    .stage { margin-right: 1rem; }
+    .stage-label, .stage-note { font-size: .875rem; }
     .state-sentence { font-size: 1.0625rem; }
     .actions .btn { min-width: 0; flex: 1 1 40%; margin: 0 .5rem .5rem 0; font-size: 1rem; min-height: 44px; }
     .shelf-zone { margin-top: 1.5rem; }
@@ -3681,7 +3673,7 @@
   }
 
   const stageKeys = [["found", "stageFound"], ["prepared", "stagePrepared"], ["mounted", "mounted"], ["registered", "stageRegistered"], ["running", "stageRunning"]];
-  const stageIcons = { done: "check", failed: "x", pending: "progress", lazy: "play", skip: "dash", none: "", neutral: "dash" };
+  const stageIcons = { done: "check", failed: "x", pending: "progress", lazy: "play", skip: "dash", none: "dash", neutral: "dash" };
   const stageStateKeys = { done: "stateDone", failed: "stateFailed", pending: "stateInProgress", lazy: "stageOnLaunch", skip: "stageNotNeeded", none: "stageNotObserved" };
 
   /* ------------------------------ art layers ------------------------------ */
