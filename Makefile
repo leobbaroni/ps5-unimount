@@ -98,8 +98,8 @@ src/sm_api_service.o src/sm_appdb.o src/sm_icon_thumb.o src/sm_gameinfo.o src/sm
 src/sm_smb.o src/sm_vfs.o: CFLAGS += $(HOMEBREW_CFLAGS)
 src/main.o src/sm_image_index.o: CFLAGS += -DSHADOWMOUNT_BUILD_TIME=\"$(BUILD_TIME)\"
 src/main.o src/sm_image_index.o: FORCE
-# These embed SHADOWMOUNT_VERSION; rebuild them so the reported version never goes stale.
-src/sm_api_service.o src/sm_log.o: FORCE
+# These embed the version; rebuild them so the reported version never goes stale.
+src/sm_api_service.o src/sm_log.o src/sm_sandbox_record.o: FORCE
 
 src/sm_l10n.o: $(L10N_CATALOGS)
 src/sm_api_service.o src/sm_takeover.o src/sm_kraken_compat.o: VERSION
