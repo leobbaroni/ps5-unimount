@@ -127,9 +127,12 @@ the same way on hardware: tearing the overlay layers down under the live game
 (the behaviour before this rule) and leaving them in place (a deferral cut
 off by SIGKILL) were each followed, when the game was closed afterwards, by
 `sceSystemServiceKillApp` blocking about 15 s, returning `0x80020003`, and
-the console going down. Deferring at least keeps the game itself intact
-until then. To stop UniMount while such a game runs, close the game first,
-or use the STOP file (never followed by a kill) and then close the game.
+the console going down. Deferring keeps the game and its layers intact, so
+that a copy started afterwards can adopt them (next paragraph); a game closed
+while no UniMount is running still takes the console down. To stop UniMount
+while such a game runs, close the game first, or use the STOP file (never
+followed by a kill) and then close the game. After a kill, load UniMount
+again before closing the game.
 
 Kept or orphaned layers are listed in the session record. A later instance
 that starts while the game still runs adopts them and removes them when the
@@ -164,7 +167,11 @@ Log lines (in `debug.log`; after the next start in `debug.log.1`):
 
 ## Session record and adoption
 
-None of the behaviour in this section has been verified on hardware yet.
+Run on hardware (test log, section M): the record for a debug `.pkg` title
+and an image title, the dry run for both, and adoption after a SIGKILL for
+both, including PS5 Payload Manager's kill during the debug `.pkg` title. Not
+run on hardware: redirect sets, a writable `app0` cover, a same-application
+replacement after adoption, any refusal, and a stop request during adoption.
 
 ### The record
 

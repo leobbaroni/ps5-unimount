@@ -54,7 +54,9 @@ shows a notification, and takes over once the game is closed.
 > [!WARNING]
 > Do not stop UniMount while a game started from a debug `.pkg` is running, for example with the
 > kill button in PS5 Payload Manager. That game then has nobody to release its mounts, and closing
-> it has taken the test console down (test log, sections J and K). Close the game first.
+> it has taken the test console down (test log, sections J and K). Close the game first. If it
+> happened anyway, load UniMount again **before** closing the game: since 0.1.2 the new copy takes
+> over the game's mounts and releases them when the game is closed.
 
 ## Install by hand
 

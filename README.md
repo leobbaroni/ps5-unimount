@@ -26,12 +26,13 @@ Kept on purpose, for compatibility: the process name `shadowmountplus.elf`, the 
 
 ## Status
 
-Version 0.1.1 (`VERSION`). It was tested on one console: firmware 13.60, kstuff-lite 1.11, PS5 Payload Manager 0.6.3. The full record is in [`docs/hardware-test-log.md`](docs/hardware-test-log.md). In short:
+Version 0.1.2 (`VERSION`). It was tested on one console: firmware 13.60, kstuff-lite 1.11, PS5 Payload Manager 0.6.3. The full record is in [`docs/hardware-test-log.md`](docs/hardware-test-log.md). In short:
 
 - Verified: a plaintext debug `.pkg` title mounted through the Kraken path and launched, with its process alive past the confirmation window; a `.exfat` image title launched through the ShadowMountPlus path; takeover from a running Kraken Mount; refusal of a Kraken Mount started later; PS5 Payload Manager install, update and rest mode; PKG Manager running beside it; the web interface loaded from the console.
 - Orbit Store: its Games-row app (`PPSA99177.ffpkg`) launched from UniMount and the compatible listener on port 8097 reported the mounted package. An actual Orbit Store download and hand-over was not tested.
 - Since 0.1.1: loading a new copy while one of UniMount's games is running (the new copy waits until the game is closed, then takes over), and stopping UniMount while an image game is running.
-- Known problem: if UniMount is stopped or killed while a game started from a debug `.pkg` is running, the console goes down when that game is closed. Close the game first. See the test log, sections J and K.
+- Since 0.1.2: if UniMount is killed while a game is running, a copy loaded before the game is closed takes over the game's mounts and releases them when it closes.
+- Known problem: if UniMount is killed while a game started from a debug `.pkg` is running and that game is closed before UniMount has been loaded again, the console goes down. Load UniMount again first, or close the game before stopping UniMount. See the test log, sections J, K and M.
 
 Not validated (copied from the test log):
 

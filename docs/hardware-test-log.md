@@ -226,6 +226,42 @@ after every check.
 Not run: a stop while Title A runs (the known failure of K), a second stop request, and the STOP
 file.
 
+### M. Fifth session: session record and adoption (0.1.2) — pass
+
+Run on 2026-11-21 in the same boot as L, on the build of commit `3648d86` (reported as `0.1.2`,
+`v0.1.1-4-g3648d8`), the file published as `unimount_v0.1.2.elf`. Since `a6a9e68` the owning
+instance records the mounts and directories it adds to a game's sandbox in
+`/data/shadowmount/sandbox-session.json`, and a copy that starts while that game runs with no
+UniMount alive adopts them. The error history held 45 files before and after every check.
+
+1. Record, owner alive (first on `a6a9e68`, repeated on `3648d86`): during Title A the record
+   held 8 entries (the `fakelib2` unionfs, four nullfs aliases including `app0/kraken`, three
+   created directories), during Title B 6 (three aliases, three directories). After each close
+   the record was gone and the launch record read `exited_normally`. Pass.
+2. Dry run: a second copy loaded while each title ran logged `[ADOPT] would adopt 5 layer(s)` for
+   Title A and `3 layer(s)` for Title B, then waited as before. Pass.
+3. SIGKILL with no game running, then a new copy: `[OWNER] previous instance did not exit
+   cleanly`, `[SHELLCORE] stale cave bridge detached`, hooks reinstalled; Title A then passed the
+   launch test. Pass.
+4. Title B running, UniMount ended with SIGKILL (test helper), new copy loaded:
+   `[ADOPT] adopted 3 layer(s)`. The game was closed through the helper about 15 s later; the three
+   aliases were unmounted in the same second and `[ADOPT] released ...: 3 of 3 layer(s) removed
+   in 1024 ms` followed. The console kept answering and the copy went on to start normally. Pass.
+5. Title A, the sequence that took the console down in K: `[ADOPT] adopted 5 layer(s)`; on close
+   the four aliases and `fakelib2` were unmounted in the same second, `released ...: 5 of 5
+   layer(s) removed in 1026 ms`, the console kept answering. Pass.
+6. Title A again with PS5 Payload Manager's kill instead of the helper: the owner logged
+   `deferred: ... (signal, overlay layers; a SIGKILL that follows leaves them orphaned)` and was
+   killed; the new copy adopted 5 layers and released 5 of 5 in 1057 ms on close. Pass.
+7. Afterwards Title A, Title B and the Orbit Store app each passed the launch test.
+
+In 4 to 6 the launch record of the interrupted launch read `observation_interrupted`, as intended
+for a launch whose end no UniMount watched as owner.
+
+Not run: closing a game after a kill without loading UniMount again (the failure of K, which
+adoption does not cover), a title with backport redirect sets or a writable `app0` cover, a
+same-application replacement after adoption, a refused record, and a stop request during adoption.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
@@ -262,7 +298,7 @@ the ones recorded above.
 - Of the launch-record fixes of commit `20d3c44`: rebooting with a game running (the old record
   must read `observation_interrupted`, never resumed) and a same-application hand-off shortly after
   a launch (one record).
-- Of the stop handling: a second stop request and the STOP file while a game runs, and any stop
-  while a debug `.pkg` game runs other than the failure recorded in K.
+- Of the stop handling: a second stop request and the STOP file while a game runs.
+- Of adoption: see the end of section M.
 - Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.
