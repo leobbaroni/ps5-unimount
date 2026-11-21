@@ -167,5 +167,12 @@ the ones recorded above.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
 - Installing from the public GitHub repository through PS5 Payload Manager, and a cold-boot
   autoload of UniMount (the console was not rebooted during these runs).
+- Everything committed after v0.1.0 has run on the host only: the stage tracker drawn as marks and
+  words, the job-strip and library-fit changes, and the launch-record fixes of commit `20d3c44`.
+  For those fixes the cases to run on the console are: restarting UniMount several times after a
+  launch was interrupted or crashed (the record must not change after the first restart);
+  rebooting with a game running (the old record must read `observation_interrupted`, never
+  resumed); quitting a confirmed game and stopping UniMount within a few seconds (the record must
+  read `exited_normally`); and a same-application hand-off shortly after a launch (one record).
 - Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.
