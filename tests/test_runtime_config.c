@@ -196,6 +196,33 @@ static void test_diagnostics_config(void) {
   assert(!fclose(file) && !load_runtime_config());
 }
 
+static void test_api_allow_launch_config(void) {
+  FILE *file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n", file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  assert(runtime_config().api_allow_launch);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[api]\nallow_launch=off\n", file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  assert(!runtime_config().api_allow_launch);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[api]\nallow_launch=on\nport=10101\n",
+                       file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  assert(runtime_config().api_allow_launch);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[api]\nallow_launch=0\n", file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  assert(!runtime_config().api_allow_launch);
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n[api]\nallow_launch=maybe\n", file) >= 0);
+  assert(!fclose(file) && !load_runtime_config());
+  file = fopen(CONFIG_FILE, "w");
+  assert(file && fputs("[config]\nversion=2\n", file) >= 0);
+  assert(!fclose(file) && load_runtime_config());
+  assert(runtime_config().api_allow_launch);
+}
+
 static void put_file(const char *path, const char *text) {
   FILE *f = fopen(path, "w");
   assert(f && fputs(text, f) >= 0 && fclose(f) == 0);
@@ -274,6 +301,13 @@ static void test_migration(void) {
   put_file(CONFIG_FILE, "api_port=12345\n");
   assert(sm_config_prepare_files() && load_runtime_config());
   assert(runtime_config().api_port == 12345);
+  reset_files();
+  // UniMount: the flat api_allow_launch key migrates to [api] allow_launch.
+  put_file(CONFIG_FILE, "api_allow_launch=0\n");
+  assert(sm_config_prepare_files() && load_runtime_config());
+  assert(!runtime_config().api_allow_launch);
+  data = get_file(CONFIG_FILE);
+  assert(strstr(data, "[api]") && strstr(data, "allow_launch")); free(data);
   reset_files();
   // Truncated strings and malformed SMB must leave every source intact.
   put_file(CONFIG_FILE, "api_port=10101\n");
@@ -439,6 +473,7 @@ int main(void) {
   test_logging_flags();
   test_unimount_settings();
   test_diagnostics_config();
+  test_api_allow_launch_config();
   write_config(1);
   assert(load_runtime_config());
   runtime_config_t retained = runtime_config();

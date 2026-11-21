@@ -1,9 +1,11 @@
 #include "sm_platform.h"
 
 #include <png.h>
+#include <pthread.h>
 #include <turbojpeg.h>
 
 #include "sm_icon_thumb.h"
+#include "sm_log.h"
 #include "sm_paths.h"
 #include "sm_runtime.h"
 
@@ -315,4 +317,294 @@ bool sm_icon_thumbnail_path(const char *title_id, const char *source_path,
     return false;
   cleanup_old_icon_files(title_id, fingerprint);
   return true;
+}
+
+// --- UniMount: key art (pic1/pic0) JPEG variants ---
+
+// Waiting plus running conversions; further requests get EBUSY at once so a
+// burst of cold art requests cannot occupy every HTTP worker.
+#define SM_ART_MAX_PENDING 2u
+
+static pthread_mutex_t g_art_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unsigned int g_art_pending;
+
+static bool ensure_art_cache_directory(void) {
+  if (mkdir(LOG_DIR, 0777) != 0 && errno != EEXIST)
+    return false;
+  return mkdir(ART_CACHE_DIR, 0777) == 0 || errno == EEXIST;
+}
+
+static bool art_cache_path(const char *title_id, sm_art_variant_t variant,
+                           uint64_t fingerprint, char out[MAX_PATH]) {
+  char name[MAX_TITLE_ID + 48u];
+  if (!sm_art_cache_name(title_id, variant, fingerprint, name, sizeof(name)))
+    return false;
+  int written = snprintf(out, MAX_PATH, "%s/%s", ART_CACHE_DIR, name);
+  return written > 0 && written < MAX_PATH;
+}
+
+static bool art_cached(const char *path) {
+  struct stat st;
+  return lstat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
+static uint64_t art_monotonic_us(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0;
+  return (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u;
+}
+
+// Box filter for opaque RGB: each target pixel averages the source area it
+// covers, so 4K key art reduces without aliasing.
+static bool resize_rgb(const unsigned char *source, uint32_t source_width,
+                       uint32_t source_height, unsigned char *target,
+                       uint32_t width, uint32_t height) {
+  for (uint32_t y = 0; y < height; ++y) {
+    if (should_stop_requested() || runtime_sleep_mode_active())
+      return false;
+    uint64_t top = ((uint64_t)y * source_height << 16u) / height;
+    uint64_t bottom = ((uint64_t)(y + 1u) * source_height << 16u) / height;
+    for (uint32_t x = 0; x < width; ++x) {
+      uint64_t left = ((uint64_t)x * source_width << 16u) / width;
+      uint64_t right = ((uint64_t)(x + 1u) * source_width << 16u) / width;
+      uint64_t total = 0, colors[3] = {0};
+      for (uint32_t sy = (uint32_t)(top >> 16u);
+           sy < (uint32_t)((bottom + 65535u) >> 16u); ++sy) {
+        uint64_t y0 = (uint64_t)sy << 16u, y1 = y0 + 65536u;
+        uint64_t wy = (bottom < y1 ? bottom : y1) - (top > y0 ? top : y0);
+        for (uint32_t sx = (uint32_t)(left >> 16u);
+             sx < (uint32_t)((right + 65535u) >> 16u); ++sx) {
+          uint64_t x0 = (uint64_t)sx << 16u, x1 = x0 + 65536u;
+          uint64_t wx = (right < x1 ? right : x1) - (left > x0 ? left : x0);
+          uint64_t weight = wx * wy;
+          const unsigned char *pixel = source + ((size_t)sy * source_width + sx) * 3u;
+          total += weight;
+          for (size_t c = 0; c < 3u; ++c)
+            colors[c] += weight * pixel[c];
+        }
+      }
+      unsigned char *pixel = target + ((size_t)y * width + x) * 3u;
+      for (size_t c = 0; c < 3u; ++c)
+        pixel[c] = total ? (unsigned char)((colors[c] + total / 2u) / total) : 0;
+    }
+  }
+  return true;
+}
+
+static bool encode_art_jpeg(const char *path, const unsigned char *pixels,
+                            uint32_t width, uint32_t height) {
+  tjhandle encoder = tjInitCompress();
+  if (!encoder)
+    return false;
+  unsigned char *jpeg = NULL;
+  unsigned long size = 0;
+  bool encoded = tjCompress2(encoder, pixels, (int)width, 0, (int)height,
+                             TJPF_RGB, &jpeg, &size, TJSAMP_420,
+                             SM_ART_JPEG_QUALITY, TJFLAG_ACCURATEDCT) == 0;
+  if (encoded) {
+    FILE *file = fopen(path, "wb");
+    encoded = file && fwrite(jpeg, 1, size, file) == size;
+    if (file && fclose(file) != 0)
+      encoded = false;
+  }
+  tjFree(jpeg);
+  (void)tjDestroy(encoder);
+  return encoded;
+}
+
+// Encode to a temporary file, then publish it atomically if the source did
+// not change meanwhile.
+static int publish_art_variant(const char *path, const unsigned char *pixels,
+                               uint32_t width, uint32_t height,
+                               const char *source_path, uint64_t fingerprint) {
+  unsigned int serial = __sync_add_and_fetch(&g_icon_temp_serial, 1u);
+  char temp_path[MAX_PATH];
+  int written = snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld.%u", path,
+                         (long)getpid(), serial);
+  if (written < 0 || (size_t)written >= sizeof(temp_path))
+    return ENAMETOOLONG;
+  bool encoded = encode_art_jpeg(temp_path, pixels, width, height);
+  struct stat current;
+  if (!encoded || should_stop_requested() || runtime_sleep_mode_active() ||
+      stat(source_path, &current) != 0 ||
+      sm_icon_source_fingerprint(source_path, &current) != fingerprint) {
+    (void)unlink(temp_path);
+    return encoded ? ECANCELED : EIO;
+  }
+  int fd = open(temp_path, O_RDONLY);
+  bool synced = fd >= 0 && fsync(fd) == 0;
+  if (fd >= 0)
+    (void)close(fd);
+  if (!synced || rename(temp_path, path) != 0) {
+    (void)unlink(temp_path);
+    return EIO;
+  }
+  return 0;
+}
+
+// Decode the source once and write every missing variant. The decoded image
+// is RGB (alpha composited on black): 3840x2160 needs about 25 MB, plus the
+// 1920x1080 intermediate (6 MB). Called with g_art_mutex held.
+static int create_art_variants(const char *title_id, const char *source_path,
+                               uint64_t fingerprint) {
+  char paths[SM_ART_VARIANT_COUNT][MAX_PATH];
+  bool missing[SM_ART_VARIANT_COUNT];
+  bool any_missing = false;
+  for (int v = 0; v < SM_ART_VARIANT_COUNT; ++v) {
+    if (!art_cache_path(title_id, (sm_art_variant_t)v, fingerprint, paths[v]))
+      return ENAMETOOLONG;
+    missing[v] = !art_cached(paths[v]);
+    any_missing = any_missing || missing[v];
+  }
+  if (!any_missing)
+    return 0;
+
+  png_image image;
+  memset(&image, 0, sizeof(image));
+  image.version = PNG_IMAGE_VERSION;
+  if (!png_image_begin_read_from_file(&image, source_path)) {
+    png_image_free(&image);
+    return EINVAL;
+  }
+  if (!sm_art_source_dimensions_ok(image.width, image.height)) {
+    log_debug("  [API] art source rejected: %s %ux%u exceeds %u px/side or "
+              "%u px", source_path, (unsigned)image.width,
+              (unsigned)image.height, SM_ART_SOURCE_MAX_SIDE,
+              SM_ART_SOURCE_MAX_PIXELS);
+    png_image_free(&image);
+    return EFBIG;
+  }
+  image.format = PNG_FORMAT_RGB;
+  png_color background = {0, 0, 0};
+  size_t source_size = PNG_IMAGE_SIZE(image);
+  unsigned char *source = malloc(source_size);
+  if (!source) {
+    png_image_free(&image);
+    return ENOMEM;
+  }
+  if (!png_image_finish_read(&image, &background, source, 0, NULL)) {
+    free(source);
+    png_image_free(&image);
+    return EINVAL;
+  }
+  uint32_t source_width = image.width, source_height = image.height;
+  png_image_free(&image);
+
+  // The tv variant is also the intermediate for the card variant.
+  uint32_t tv_width, tv_height, max_width, max_height;
+  (void)sm_art_variant_bounds(SM_ART_VARIANT_TV, &max_width, &max_height);
+  (void)sm_art_fit(source_width, source_height, max_width, max_height,
+                   &tv_width, &tv_height);
+  unsigned char *tv = source;
+  if (tv_width != source_width || tv_height != source_height) {
+    tv = malloc((size_t)tv_width * tv_height * 3u);
+    if (!tv || !resize_rgb(source, source_width, source_height, tv, tv_width,
+                           tv_height)) {
+      int status = tv ? ECANCELED : ENOMEM;
+      free(tv);
+      free(source);
+      return status;
+    }
+    free(source);
+  }
+  int status = 0;
+  if (missing[SM_ART_VARIANT_TV])
+    status = publish_art_variant(paths[SM_ART_VARIANT_TV], tv, tv_width,
+                                 tv_height, source_path, fingerprint);
+  if (status == 0 && missing[SM_ART_VARIANT_CARD]) {
+    uint32_t card_width, card_height;
+    (void)sm_art_variant_bounds(SM_ART_VARIANT_CARD, &max_width, &max_height);
+    (void)sm_art_fit(source_width, source_height, max_width, max_height,
+                     &card_width, &card_height);
+    unsigned char *card = tv;
+    if (card_width != tv_width || card_height != tv_height) {
+      card = malloc((size_t)card_width * card_height * 3u);
+      if (!card || !resize_rgb(tv, tv_width, tv_height, card, card_width,
+                               card_height))
+        status = card ? ECANCELED : ENOMEM;
+    }
+    if (status == 0)
+      status = publish_art_variant(paths[SM_ART_VARIANT_CARD], card,
+                                   card_width, card_height, source_path,
+                                   fingerprint);
+    if (card != tv)
+      free(card);
+  }
+  free(tv);
+  return status;
+}
+
+static void cleanup_old_art_files(const char *title_id, uint64_t fingerprint) {
+  DIR *directory = opendir(ART_CACHE_DIR);
+  if (!directory)
+    return;
+  time_t now = time(NULL);
+  struct dirent *entry;
+  while ((entry = readdir(directory)) != NULL) {
+    if (should_stop_requested() || runtime_sleep_mode_active())
+      break;
+    if (!sm_art_cache_entry_is_stale(entry->d_name, title_id, fingerprint))
+      continue;
+    char path[MAX_PATH];
+    int written = snprintf(path, sizeof(path), "%s/%s", ART_CACHE_DIR,
+                           entry->d_name);
+    if (written < 0 || (size_t)written >= sizeof(path))
+      continue;
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || now < st.st_mtime ||
+        now - st.st_mtime < SM_ICON_TEMP_MAX_AGE_SECONDS)
+      continue;
+    (void)unlink(path);
+  }
+  (void)closedir(directory);
+}
+
+int sm_art_variant_path(const char *title_id, const char *source_path,
+                        const struct stat *source_st, sm_art_variant_t variant,
+                        char out[MAX_PATH]) {
+  if (!title_id || strlen(title_id) != 9u ||
+      strspn(title_id, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != 9u ||
+      !source_path || !source_st || !out || !S_ISREG(source_st->st_mode) ||
+      source_st->st_size <= 0 ||
+      (variant != SM_ART_VARIANT_TV && variant != SM_ART_VARIANT_CARD))
+    return EINVAL;
+  if ((uint64_t)source_st->st_size > SM_ART_SOURCE_MAX_FILE_SIZE)
+    return EFBIG;
+  if (should_stop_requested() || runtime_sleep_mode_active())
+    return ECANCELED;
+  if (!ensure_art_cache_directory())
+    return errno != 0 ? errno : EIO;
+  uint64_t fingerprint = sm_icon_source_fingerprint(source_path, source_st);
+  if (!art_cache_path(title_id, variant, fingerprint, out))
+    return ENAMETOOLONG;
+  if (art_cached(out))
+    return 0;
+  if (__sync_add_and_fetch(&g_art_pending, 1u) > SM_ART_MAX_PENDING) {
+    (void)__sync_sub_and_fetch(&g_art_pending, 1u);
+    return EBUSY;
+  }
+  pthread_mutex_lock(&g_art_mutex);
+  uint64_t started_us = art_monotonic_us();
+  int status = art_cached(out) ? 0
+                               : create_art_variants(title_id, source_path,
+                                                     fingerprint);
+  uint64_t elapsed_ms = (art_monotonic_us() - started_us) / 1000u;
+  pthread_mutex_unlock(&g_art_mutex);
+  (void)__sync_sub_and_fetch(&g_art_pending, 1u);
+  // The requested variant may exist even if the other one failed.
+  if (art_cached(out))
+    status = 0;
+  else if (status == 0)
+    status = EIO;
+  if (status == 0) {
+    log_debug("  [API] art cached: %s %s source=%s %llu ms", title_id,
+              sm_art_variant_name(variant), source_path,
+              (unsigned long long)elapsed_ms);
+    cleanup_old_art_files(title_id, fingerprint);
+  } else if (status != ECANCELED) {
+    log_debug("  [API] art conversion failed: %s %s source=%s status=%d",
+              title_id, sm_art_variant_name(variant), source_path, status);
+  }
+  return status;
 }

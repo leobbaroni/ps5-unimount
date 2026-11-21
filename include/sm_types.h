@@ -189,6 +189,8 @@ typedef struct runtime_config {
   bool diagnostics_enabled;
   uint32_t diagnostics_running_confirm_seconds;
   uint32_t diagnostics_error_window_seconds;
+  // UniMount: [api] allow_launch gates /api/v1/games/launch and /close.
+  bool api_allow_launch;
 } runtime_config_t;
 
 typedef enum {

@@ -58,6 +58,20 @@ int32_t sceSystemServiceParamGetInt(int32_t param_id, int32_t *value);
 int sceUserServiceInitialize(void *);
 void sceUserServiceTerminate(void);
 
+// UniMount: title launch/close, as in ps5-payload-dev/websrv (GPL-3.0).
+typedef struct app_launch_ctx {
+  uint32_t structsize;
+  uint32_t user_id;
+  uint32_t app_opt;
+  uint64_t crash_report;
+  uint32_t check_flag;
+} app_launch_ctx_t;
+int sceUserServiceGetForegroundUser(uint32_t *user_id);
+int sceSystemServiceGetAppIdOfRunningBigApp(void);
+int sceSystemServiceKillApp(int app_id, int how, int reason, int core_dump);
+int sceSystemServiceLaunchApp(const char *title_id, char **argv,
+                              app_launch_ctx_t *ctx);
+
 // Standard Notification
 typedef struct notify_request {
   char unused[45];

@@ -14,6 +14,8 @@
   "libSceAmpr.sprx"
 #define FAKELIB_CACHE_PATH "/data/shadowmount/cache"
 #define ICON_CACHE_DIR "/data/shadowmount/icon-cache"
+// UniMount: key-art JPEG variants (GET /api/v1/games/art).
+#define ART_CACHE_DIR "/data/shadowmount/art-cache"
 #define LOG_DIR "/data/shadowmount"
 #define LOG_FILE "/data/shadowmount/debug.log"
 #define LOG_FILE_PREV "/data/shadowmount/debug.log.1"

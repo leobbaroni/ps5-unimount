@@ -16,6 +16,7 @@
 #include "sm_diag.h"
 #include "sm_filesystem.h"
 #include "sm_game_cache.h"
+#include "sm_game_control.h"
 #include "sm_game_lifecycle.h"
 #include "sm_gameinfo.h"
 #include "sm_icon_thumb.h"
@@ -748,7 +749,10 @@ static void handle_version(struct MHD_Connection *fd) {
       !append_json_string(capabilities, "read_debug_log") ||
       !append_json_string(capabilities, "read_kernel_log") ||
       !append_json_string(capabilities, "rescan") ||
-      !append_json_string(capabilities, "ownership")) {
+      !append_json_string(capabilities, "ownership") ||
+      !append_json_string(capabilities, "game_art") ||
+      !append_json_string(capabilities, "launch_game") ||
+      !append_json_string(capabilities, "close_game")) {
     json_object_put(capabilities);
     json_object_put(response);
     send_out_of_memory_response(fd);
@@ -1213,6 +1217,9 @@ static void resolve_game_icon_url(const char *title_id, const char *recorded_pat
                  (unsigned long long)sm_icon_source_fingerprint(path, &st));
 }
 
+static void resolve_game_art_url(const char *title_id, const char *runtime_path,
+                                 char *out, size_t size);
+
 static bool resolve_installed_pkg_game(
     const char *title_id, const sm_app_db_game_info_t *metadata,
     sm_game_cache_snapshot_entry_t *entry) {
@@ -1403,6 +1410,8 @@ static struct json_object *game_to_json(
   char icon_url[SM_API_ROUTE_SIZE + MAX_TITLE_ID + 32u];
   resolve_game_icon_url(source->title_id, metadata ? metadata->icon_path : NULL,
                          library_entry, icon_url, sizeof(icon_url));
+  char art_url[SM_API_ROUTE_SIZE + MAX_TITLE_ID + 32u];
+  resolve_game_art_url(source->title_id, source->path, art_url, sizeof(art_url));
   char backport_path[MAX_PATH];
   (void)resolve_backport_path_for_title(source->title_id, NULL, backport_path);
 
@@ -1429,7 +1438,8 @@ static struct json_object *game_to_json(
     json_object_put(item);
     return NULL;
   }
-  if (!add_json_bool(item, "installed_pkg", installed_pkg) ||
+  if ((art_url[0] != '\0' && !add_json_string(item, "art_url", art_url)) ||
+      !add_json_bool(item, "installed_pkg", installed_pkg) ||
       !add_json_bool(item, "can_uninstall", installed) ||
       !add_json_bool(item, "kraken_patch_applied", lih_applied) ||
       (!library_entry && source_info.kraken &&
@@ -2103,6 +2113,414 @@ static bool handle_game_icon(struct MHD_Connection *connection) {
   }
   return send_file_response(connection, fd, (uint64_t)st.st_size, content_type,
                             "public, max-age=86400, immutable");
+}
+
+// --- UniMount: key art, launch and close ---
+
+#define SM_API_ART_MAX_CANDIDATES 16u
+#define SM_API_LAUNCH_CLOSE_WAIT_US (10u * 1000000u)
+#define SM_API_LAUNCH_POLL_US 200000u
+
+// Art sources in preference order: appmeta pic1/pic0 (copied at registration),
+// then the same names in the title's own sce_sys (library runtime path and
+// /user/app on internal or extended storage). Only paths are built here.
+static size_t game_art_candidates(const char *title_id, const char *runtime_path,
+                                  char out[SM_API_ART_MAX_CANDIDATES][MAX_PATH]) {
+  static const char *const names[] = {"pic1.png", "pic0.png"};
+  static const char *const storage_prefixes[] = {
+      "", "/mnt/ext0", "/mnt/ext0/ps5", "/mnt/ext1", "/mnt/ext1/ps5"};
+  char roots[2u + sizeof(storage_prefixes) / sizeof(storage_prefixes[0])][MAX_PATH];
+  size_t root_count = 0;
+  int written = snprintf(roots[root_count], MAX_PATH, "%s/%s", APPMETA_BASE,
+                         title_id);
+  if (written > 0 && written < MAX_PATH)
+    root_count++;
+  if (runtime_path && runtime_path[0] == '/') {
+    // Installed packages report their app.pkg; use its directory.
+    size_t length = strlen(runtime_path);
+    static const char pkg_suffix[] = ".pkg";
+    if (length > sizeof(pkg_suffix) - 1u &&
+        strcasecmp(runtime_path + length - (sizeof(pkg_suffix) - 1u), pkg_suffix) == 0) {
+      const char *slash = strrchr(runtime_path, '/');
+      length = slash ? (size_t)(slash - runtime_path) : 0;
+    }
+    written = snprintf(roots[root_count], MAX_PATH, "%.*s/sce_sys", (int)length,
+                       runtime_path);
+    if (length > 0 && written > 0 && written < MAX_PATH)
+      root_count++;
+  }
+  for (size_t i = 0; i < sizeof(storage_prefixes) / sizeof(storage_prefixes[0]); ++i) {
+    written = snprintf(roots[root_count], MAX_PATH, "%s%s/%s/sce_sys",
+                       storage_prefixes[i], APP_BASE, title_id);
+    if (written > 0 && written < MAX_PATH)
+      root_count++;
+  }
+  size_t count = 0;
+  for (size_t i = 0; i < root_count; ++i) {
+    for (size_t j = 0; j < sizeof(names) / sizeof(names[0]) &&
+                       count < SM_API_ART_MAX_CANDIDATES; ++j) {
+      written = snprintf(out[count], MAX_PATH, "%s/%s", roots[i], names[j]);
+      if (written > 0 && written < MAX_PATH)
+        count++;
+    }
+  }
+  return count;
+}
+
+static bool art_source_stat(const char *path, struct stat *st) {
+  return stat(path, st) == 0 && S_ISREG(st->st_mode) && st->st_size > 0;
+}
+
+// Library listing: stat only, no decoding.
+static void resolve_game_art_url(const char *title_id, const char *runtime_path,
+                                 char *out, size_t size) {
+  char candidates[SM_API_ART_MAX_CANDIDATES][MAX_PATH];
+  size_t count = game_art_candidates(title_id, runtime_path, candidates);
+  out[0] = '\0';
+  for (size_t i = 0; i < count; ++i) {
+    struct stat st;
+    if (!art_source_stat(candidates[i], &st))
+      continue;
+    (void)snprintf(out, size, "%s?title_id=%s&v=%u-%016llx",
+                   SM_API_ROUTE_GAME_ART, title_id, SM_ART_CACHE_VERSION,
+                   (unsigned long long)sm_icon_source_fingerprint(candidates[i], &st));
+    return;
+  }
+}
+
+static bool add_json_null(struct json_object *object, const char *key) {
+  return json_object_object_add_ex(object, key, NULL,
+                                   JSON_C_OBJECT_ADD_CONSTANT_KEY) == 0;
+}
+
+static bool add_app_id_fields(struct json_object *object, const char *key,
+                              const char *hex_key, int32_t app_id) {
+  char hex[16];
+  (void)snprintf(hex, sizeof(hex), "0x%08X", (uint32_t)app_id);
+  return add_json_int(object, key, app_id) &&
+         add_json_string(object, hex_key, hex);
+}
+
+// Error envelope with error_reason, optionally the native SCE code.
+static bool send_reason_error_response(struct MHD_Connection *connection,
+                                       int http_status, int status,
+                                       const char *reason, const char *message,
+                                       bool has_native, int32_t native_code) {
+  struct json_object *response = new_status_response(status);
+  if (!response)
+    return send_out_of_memory_response(connection);
+  bool built = add_json_string(response, "error", message) &&
+               add_json_string(response, "error_reason", reason);
+  if (built && has_native)
+    built = add_app_id_fields(response, "native_code", "native_code_hex",
+                              native_code);
+  if (!built) {
+    json_object_put(response);
+    return send_out_of_memory_response(connection);
+  }
+  bool sent = send_json_object(connection, http_status, response);
+  json_object_put(response);
+  return sent;
+}
+
+static bool handle_game_art(struct MHD_Connection *connection) {
+  const char *title_id = MHD_lookup_connection_value(
+      connection, MHD_GET_ARGUMENT_KIND, "title_id");
+  if (!title_id || !is_supported_game_title_id(title_id)) {
+    return send_error_response(
+        connection, 400, EINVAL,
+        "title_id query parameter must be a valid PS4 or PS5 title ID");
+  }
+  sm_art_variant_t variant;
+  if (!sm_art_parse_variant(MHD_lookup_connection_value(
+                                connection, MHD_GET_ARGUMENT_KIND, "size"),
+                            &variant)) {
+    return send_error_response(connection, 400, EINVAL,
+                               "size query parameter must be tv or card");
+  }
+  sm_game_cache_snapshot_entry_t entry;
+  bool in_library = find_game_snapshot_by_title(title_id, &entry);
+  char candidates[SM_API_ART_MAX_CANDIDATES][MAX_PATH];
+  size_t count = game_art_candidates(title_id, in_library ? entry.path : NULL,
+                                     candidates);
+  for (size_t i = 0; i < count; ++i) {
+    struct stat st;
+    if (!art_source_stat(candidates[i], &st))
+      continue;
+    char art_path[MAX_PATH];
+    int status = sm_art_variant_path(title_id, candidates[i], &st, variant,
+                                     art_path);
+    if (status == EBUSY) {
+      return send_reason_error_response(
+          connection, 409, EBUSY, "art_busy",
+          "another key-art conversion is running; try again shortly", false, 0);
+    }
+    if (status == ECANCELED) {
+      return send_reason_error_response(connection, 409, ECANCELED, "stopping",
+                                        "service is stopping or in rest mode",
+                                        false, 0);
+    }
+    if (status != 0)
+      continue;  // Not decodable or too large: try the next source.
+    int fd = open(art_path, O_RDONLY);
+    struct stat art_st;
+    if (fd >= 0 && fstat(fd, &art_st) == 0 && S_ISREG(art_st.st_mode) &&
+        art_st.st_size > 0) {
+      return send_file_response(connection, fd, (uint64_t)art_st.st_size,
+                                "image/jpeg", "public, max-age=86400, immutable");
+    }
+    if (fd >= 0)
+      (void)close(fd);
+  }
+  return send_reason_error_response(connection, 404, ENOENT, "art_unavailable",
+                                    "game key art is not available", false, 0);
+}
+
+static bool api_service_stopping(void) {
+  pthread_mutex_lock(&g_api.mutex);
+  bool stopping = g_api.stop_requested;
+  pthread_mutex_unlock(&g_api.mutex);
+  return stopping || should_stop_requested();
+}
+
+typedef struct {
+  int32_t app_id;
+  int32_t pid;
+  char tracked_title_id[MAX_TITLE_ID];
+  const char *title_id;  // confirmed title of the big app, or NULL
+} running_big_app_t;
+
+// Big app from SystemService; title and pid only when the lifecycle module's
+// tracked game process is that app (same app id).
+static void read_running_big_app(running_big_app_t *out) {
+  memset(out, 0, sizeof(*out));
+  out->app_id = sceSystemServiceGetAppIdOfRunningBigApp();
+  int32_t pid = sm_game_lifecycle_active_pid();
+  uint32_t tracked_app_id = 0;
+  if (out->app_id > 0 && pid > 0) {
+    app_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (sceKernelGetAppInfo((pid_t)pid, &info) == 0) {
+      size_t length = strnlen(info.title_id, sizeof(info.title_id));
+      if (length < sizeof(out->tracked_title_id)) {
+        memcpy(out->tracked_title_id, info.title_id, length);
+        out->tracked_title_id[length] = '\0';
+        tracked_app_id = info.app_id;
+      }
+    }
+  }
+  out->title_id = sm_running_title(out->app_id, pid, tracked_app_id,
+                                   out->tracked_title_id);
+  out->pid = out->title_id ? pid : 0;
+}
+
+static bool add_running_fields(struct json_object *response,
+                               const running_big_app_t *running) {
+  return add_json_bool(response, "running", running->app_id > 0) &&
+         add_app_id_fields(response, "app_id", "app_id_hex", running->app_id) &&
+         (running->title_id
+              ? add_json_string(response, "title_id", running->title_id)
+              : add_json_null(response, "title_id")) &&
+         (running->pid > 0 ? add_json_int(response, "pid", running->pid)
+                           : add_json_null(response, "pid"));
+}
+
+static bool game_title_known(const char *title_id) {
+  sm_game_cache_snapshot_entry_t entry;
+  if (find_game_snapshot_by_title(title_id, &entry))
+    return true;
+  sm_app_db_game_info_t *metadata = NULL;
+  size_t count = 0;
+  if (!app_db_game_info_snapshot(&metadata, &count))
+    return false;
+  bool known = app_db_find_game_info(metadata, count, title_id) != NULL;
+  free(metadata);
+  return known;
+}
+
+static const char *game_control_message(sm_game_control_decision_t decision) {
+  switch (decision) {
+  case SM_GAME_CONTROL_DISABLED: return "launch and close are disabled by [api] allow_launch=off";
+  case SM_GAME_CONTROL_STOPPING: return "service is stopping";
+  case SM_GAME_CONTROL_REST_MODE: return "console is entering or in rest mode";
+  case SM_GAME_CONTROL_INVALID_TITLE: return "title_id must be a valid PS4 or PS5 title ID";
+  case SM_GAME_CONTROL_UNKNOWN_TITLE: return "title is not in the library or registered";
+  case SM_GAME_CONTROL_APP_RUNNING: return "another application is running; close it or send \"replace\": true";
+  case SM_GAME_CONTROL_NO_APP_RUNNING: return "no application is running";
+  case SM_GAME_CONTROL_TITLE_MISMATCH: return "the running application is a different title";
+  case SM_GAME_CONTROL_TITLE_UNKNOWN_RUNNING: return "the running application's title cannot be confirmed";
+  default: return "";
+  }
+}
+
+static void send_game_control_refusal(struct MHD_Connection *connection,
+                                      sm_game_control_decision_t decision) {
+  (void)send_reason_error_response(
+      connection, sm_game_control_http_status(decision),
+      sm_game_control_status(decision), sm_game_control_reason(decision),
+      game_control_message(decision), false, 0);
+}
+
+static void handle_game_running(struct MHD_Connection *connection) {
+  running_big_app_t running;
+  read_running_big_app(&running);
+  struct json_object *response = new_status_response(0);
+  if (!response || !add_running_fields(response, &running)) {
+    if (response)
+      json_object_put(response);
+    send_out_of_memory_response(connection);
+    return;
+  }
+  (void)send_json_object(connection, 200, response);
+  json_object_put(response);
+}
+
+static void handle_game_launch(struct MHD_Connection *connection,
+                               struct json_object *request) {
+  bool replace = false;
+  if (!get_optional_bool(request, "replace", false, &replace)) {
+    send_error_response(connection, 400, EINVAL, "replace must be boolean");
+    return;
+  }
+  const char *title_id = get_title_id(request);
+  const runtime_config_t cfg = runtime_config();
+  sm_launch_state_t state = {
+      .allow_launch = cfg.api_allow_launch,
+      .stopping = api_service_stopping(),
+      .rest_mode = runtime_sleep_mode_active(),
+      .title_valid = title_id != NULL,
+      .replace = replace,
+      .running_app_id = sceSystemServiceGetAppIdOfRunningBigApp(),
+  };
+  state.title_known = title_id && game_title_known(title_id);
+  sm_game_control_decision_t decision = sm_launch_decide(&state);
+  log_debug("  [API] HTTP launch game: title=%s replace=%d running=0x%08X "
+            "decision=%s", title_id ? title_id : "(invalid)", replace ? 1 : 0,
+            (uint32_t)state.running_app_id,
+            decision == SM_GAME_CONTROL_OK ? "launch"
+            : decision == SM_GAME_CONTROL_REPLACE ? "replace"
+                                                  : sm_game_control_reason(decision));
+  if (decision != SM_GAME_CONTROL_OK && decision != SM_GAME_CONTROL_REPLACE) {
+    send_game_control_refusal(connection, decision);
+    return;
+  }
+
+  bool replaced = false;
+  if (decision == SM_GAME_CONTROL_REPLACE) {
+    (void)MHD_set_connection_option(connection, MHD_CONNECTION_OPTION_TIMEOUT, 0u);
+    int rc = sceSystemServiceKillApp(state.running_app_id, -1, 0, 0);
+    log_debug("  [API] HTTP launch replace: kill app_id=0x%08X rc=0x%08X",
+              (uint32_t)state.running_app_id, (uint32_t)rc);
+    if (rc != 0) {
+      send_reason_error_response(connection, 500, EIO, "close_failed",
+                                 "the running application could not be closed",
+                                 true, rc);
+      return;
+    }
+    uint32_t waited_us = 0;
+    while (sceSystemServiceGetAppIdOfRunningBigApp() > 0) {
+      if (api_service_stopping() || runtime_sleep_mode_active()) {
+        send_game_control_refusal(connection, api_service_stopping()
+                                                  ? SM_GAME_CONTROL_STOPPING
+                                                  : SM_GAME_CONTROL_REST_MODE);
+        return;
+      }
+      if (waited_us >= SM_API_LAUNCH_CLOSE_WAIT_US) {
+        log_debug("  [API] HTTP launch replace: app_id=0x%08X still running "
+                  "after %u ms", (uint32_t)state.running_app_id,
+                  waited_us / 1000u);
+        send_reason_error_response(
+            connection, 409, ETIMEDOUT, "close_timeout",
+            "the running application did not close within 10 seconds", false, 0);
+        return;
+      }
+      sceKernelUsleep(SM_API_LAUNCH_POLL_US);
+      waited_us += SM_API_LAUNCH_POLL_US;
+    }
+    replaced = true;
+    log_debug("  [API] HTTP launch replace: closed after %u ms",
+              waited_us / 1000u);
+  }
+
+  app_launch_ctx_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  char *argv[1] = {NULL};
+  int rc = sceUserServiceGetForegroundUser(&ctx.user_id);
+  if (rc != 0) {
+    log_debug("  [API] HTTP launch game: title=%s foreground user rc=0x%08X",
+              title_id, (uint32_t)rc);
+    send_reason_error_response(connection, 500, EIO, "no_foreground_user",
+                               "no foreground user is signed in", true, rc);
+    return;
+  }
+  rc = sceSystemServiceLaunchApp(title_id, argv, &ctx);
+  log_debug("  [API] HTTP launch game: title=%s user=0x%08X rc=0x%08X",
+            title_id, ctx.user_id, (uint32_t)rc);
+  if (rc < 0) {
+    send_reason_error_response(connection, 500, EIO, "launch_failed",
+                               "the system refused to launch the title", true, rc);
+    return;
+  }
+  struct json_object *response = new_status_response(0);
+  if (!response || !add_json_string(response, "title_id", title_id) ||
+      !add_app_id_fields(response, "app_id", "app_id_hex", rc) ||
+      !add_json_bool(response, "replaced", replaced)) {
+    if (response)
+      json_object_put(response);
+    send_out_of_memory_response(connection);
+    return;
+  }
+  (void)send_json_object(connection, 200, response);
+  json_object_put(response);
+}
+
+static void handle_game_close(struct MHD_Connection *connection,
+                              struct json_object *request) {
+  bool title_given = json_object_object_get_ex(request, "title_id", NULL);
+  const char *title_id = title_given ? get_title_id(request) : NULL;
+  running_big_app_t running;
+  read_running_big_app(&running);
+  const runtime_config_t cfg = runtime_config();
+  sm_close_state_t state = {
+      .allow_launch = cfg.api_allow_launch,
+      .stopping = api_service_stopping(),
+      .rest_mode = runtime_sleep_mode_active(),
+      .title_given = title_given,
+      .title_valid = title_id != NULL,
+      .title_id = title_id,
+      .running_app_id = running.app_id,
+      .running_title_id = running.title_id,
+  };
+  sm_game_control_decision_t decision = sm_close_decide(&state);
+  log_debug("  [API] HTTP close game: title=%s running=0x%08X running_title=%s "
+            "decision=%s", title_given ? (title_id ? title_id : "(invalid)") : "(any)",
+            (uint32_t)running.app_id, running.title_id ? running.title_id : "(unknown)",
+            decision == SM_GAME_CONTROL_OK ? "close" : sm_game_control_reason(decision));
+  if (decision != SM_GAME_CONTROL_OK) {
+    send_game_control_refusal(connection, decision);
+    return;
+  }
+  int rc = sceSystemServiceKillApp(running.app_id, -1, 0, 0);
+  log_debug("  [API] HTTP close game: kill app_id=0x%08X rc=0x%08X",
+            (uint32_t)running.app_id, (uint32_t)rc);
+  if (rc != 0) {
+    send_reason_error_response(connection, 500, EIO, "close_failed",
+                               "the running application could not be closed",
+                               true, rc);
+    return;
+  }
+  struct json_object *response = new_status_response(0);
+  if (!response || !add_json_bool(response, "closed", true) ||
+      !add_app_id_fields(response, "app_id", "app_id_hex", running.app_id) ||
+      !(running.title_id ? add_json_string(response, "title_id", running.title_id)
+                         : add_json_null(response, "title_id"))) {
+    if (response)
+      json_object_put(response);
+    send_out_of_memory_response(connection);
+    return;
+  }
+  (void)send_json_object(connection, 200, response);
+  json_object_put(response);
 }
 
 static bool handle_index_page(struct MHD_Connection *connection) {
@@ -3305,6 +3723,12 @@ static void dispatch_request(struct MHD_Connection *connection,
     handle_package_range(connection, json);
   } else if (strcmp(route, SM_API_ROUTE_OWNERSHIP) == 0) {
     (void)handle_ownership(connection);
+  } else if (strcmp(route, SM_API_ROUTE_GAME_LAUNCH) == 0) {
+    handle_game_launch(connection, json);
+  } else if (strcmp(route, SM_API_ROUTE_GAME_CLOSE) == 0) {
+    handle_game_close(connection, json);
+  } else if (strcmp(route, SM_API_ROUTE_GAME_RUNNING) == 0) {
+    handle_game_running(connection);
   } else {
     send_error_response(connection, 404, ENOENT, "unknown API route");
   }
@@ -6467,6 +6891,8 @@ static enum MHD_Result handle_http_request(
                                        "image/png", "public, max-age=86400");
     else if (strcmp(url, SM_API_ROUTE_GAME_ICON) == 0)
       queued = handle_game_icon(connection);
+    else if (strcmp(url, SM_API_ROUTE_GAME_ART) == 0)
+      queued = handle_game_art(connection);
     else if (strcmp(url, SM_API_ROUTE_PACKAGE_ICON) == 0)
       queued = handle_package_icon(connection);
     else if (strcmp(url, SM_API_ROUTE_OWNERSHIP) == 0)

@@ -15,7 +15,7 @@ const sm_config_key_t sm_config_keys[] = {
   {"general", "library_sync_notification", "library_sync_notification"},
   {"general", "language", "language"},
   {"api", "enabled", "api_enabled"}, {"api", "bind_address", "api_bind_address"},
-  {"api", "port", "api_port"},
+  {"api", "port", "api_port"}, {"api", "allow_launch", "api_allow_launch"},
   {"scan", "depth", "scan_depth"}, {"scan", "path", "scanpath"},
   {"scan", "interval_seconds", "scan_interval_seconds"},
   {"scan", "stability_wait_seconds", "stability_wait_seconds"},

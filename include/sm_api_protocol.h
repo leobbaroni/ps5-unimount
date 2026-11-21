@@ -52,5 +52,10 @@
 #define SM_API_ROUTE_PACKAGE_RANGE "/api/v1/packages/stream/request"
 #define SM_API_ROUTE_PACKAGE_CHUNK "/api/v1/packages/stream/chunk"
 #define SM_API_ROUTE_OWNERSHIP "/api/v1/ownership"
+// UniMount: key art and remote launch/close.
+#define SM_API_ROUTE_GAME_ART "/api/v1/games/art"
+#define SM_API_ROUTE_GAME_LAUNCH "/api/v1/games/launch"
+#define SM_API_ROUTE_GAME_CLOSE "/api/v1/games/close"
+#define SM_API_ROUTE_GAME_RUNNING "/api/v1/games/running"
 
 #endif

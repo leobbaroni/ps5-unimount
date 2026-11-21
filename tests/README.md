@@ -9,6 +9,7 @@ python3 tools/test_shellcore_launch.py --sanitize
 python3 tools/test_sandbox_cleanup.py
 python3 tools/test_unimount_logic.py --sanitize
 python3 tools/test_diag.py --sanitize
+python3 tools/test_game_control.py --sanitize
 ```
 
 The UniMount logic test compiles `src/sm_unimount_logic.c` with the host
@@ -17,7 +18,19 @@ detection, quit outcomes, legacy-mount matching, adoption rules, the ownership
 ledger, the compatible listener's request parsing, routing and redirect, the
 automatic-mount failure ledger and decisions, and AMPR-emu-NG selection and
 replacement rules. The runtime config test also checks the `[compat]` and
-`[kraken]` settings.
+`[kraken]` settings and `[api] allow_launch` (default, on/off, invalid value,
+legacy `api_allow_launch` migration).
+
+The game control test compiles `src/sm_game_control.c`. It covers key-art
+variant parsing and sizing (aspect-preserving fit, no upscaling, extreme
+ratios), the source dimension caps (8192 px a side, 64 MPx), cache-name
+derivation (title, variant, fingerprint) and stale-entry selection, and the
+launch/close guard decisions with injected state (validation, `allow_launch`,
+stopping, rest mode, unknown title, `app_running`/`replace`, `no_app_running`,
+`title_mismatch`, unconfirmed running title) including their reasons and
+HTTP/errno mapping. It also extracts the production RGB box filter
+(`resize_rgb` in `src/sm_icon_thumb.c`) and checks a 3840x2160 to 1920x1080 to
+640x360 chain, averaging, and cancellation.
 
 The config test compiles the production implementation with host stubs for
 logging, localization and backend names. It checks concurrent initialization,

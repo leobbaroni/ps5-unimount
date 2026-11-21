@@ -280,7 +280,7 @@ Most common options are available through the web interface. For complete accept
 | Section | Examples | What they control |
 | --- | --- | --- |
 | `[general]` | `debug`, `quiet_mode`, `language` | Logs, notifications, localization |
-| `[api]` | `enabled`, `bind_address`, `port` | Web interface/API access |
+| `[api]` | `enabled`, `bind_address`, `port`, `allow_launch` | Web interface/API access; `allow_launch` gates starting/closing games through the API |
 | `[scan]` | `path`, `depth`, `interval_seconds` | Library discovery |
 | `[mount]` | `mode`, `persistent_images`, `exfat_backend`, `ufs_backend` | Default image-mount behavior |
 | `[library]` | `install_all`, `remove_missing`, `remove_delay_seconds` | Registration and missing-title cleanup |

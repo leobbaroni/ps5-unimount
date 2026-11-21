@@ -589,6 +589,199 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/games/art:
+    get:
+      operationId: getGameArt
+      summary: Stream a cached JPEG of the game's 16:9 key art
+      description: |
+        Source: the first of /user/appmeta/<ID>/pic1.png, /user/appmeta/<ID>/pic0.png,
+        then pic1.png/pic0.png in the title's own sce_sys, that exists and decodes.
+        tv is at most 1920x1080 and card at most 640x360; aspect ratio is preserved
+        and sources are never enlarged. Both variants are cached on disk after one
+        decode. Use the versioned art_url from the game list. Capability game_art.
+      tags: [Games]
+      parameters:
+        - name: title_id
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/TitleId"
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [tv, card]
+            default: tv
+        - name: v
+          in: query
+          required: false
+          description: Cache-busting revision copied from art_url; ignored by the server.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cached JPEG key art
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+            Cache-Control:
+              description: public, max-age=86400, immutable
+              schema:
+                type: string
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/GameControlError"
+        "409":
+          $ref: "#/components/responses/GameControlError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/games/launch:
+    options:
+      operationId: preflightLaunchGame
+      summary: CORS preflight
+      tags: [Games]
+      responses:
+        "204":
+          $ref: "#/components/responses/Preflight"
+    post:
+      operationId: launchGame
+      summary: Ask the system to start a title, as a launch from the home screen
+      description: |
+        Uses the foreground user and sceSystemServiceLaunchApp. Refused with
+        app_running while another application runs unless replace is true; then
+        it is closed with sceSystemServiceKillApp and the route waits up to 10 s.
+        Disabled by [api] allow_launch=off. The API has no authentication.
+      tags: [Games]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LaunchRequest"
+      responses:
+        "200":
+          description: The system accepted the launch
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaunchResponse"
+        "400":
+          $ref: "#/components/responses/GameControlError"
+        "403":
+          $ref: "#/components/responses/GameControlError"
+        "404":
+          $ref: "#/components/responses/GameControlError"
+        "409":
+          $ref: "#/components/responses/GameControlError"
+        "411":
+          $ref: "#/components/responses/LengthRequired"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "431":
+          $ref: "#/components/responses/HeadersTooLarge"
+        "500":
+          $ref: "#/components/responses/GameControlError"
+
+  /api/v1/games/close:
+    options:
+      operationId: preflightCloseGame
+      summary: CORS preflight
+      tags: [Games]
+      responses:
+        "204":
+          $ref: "#/components/responses/Preflight"
+    post:
+      operationId: closeGame
+      summary: Close the running application, optionally only when it is the given title
+      description: |
+        Calls sceSystemServiceKillApp(app_id, -1, 0, 0). With title_id the running
+        title must be confirmed by the lifecycle watcher, otherwise the request is
+        refused. Closing is asynchronous; poll /api/v1/games/running.
+        Disabled by [api] allow_launch=off.
+      tags: [Games]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloseRequest"
+      responses:
+        "200":
+          description: The system accepted the close request
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloseResponse"
+        "400":
+          $ref: "#/components/responses/GameControlError"
+        "403":
+          $ref: "#/components/responses/GameControlError"
+        "409":
+          $ref: "#/components/responses/GameControlError"
+        "411":
+          $ref: "#/components/responses/LengthRequired"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "431":
+          $ref: "#/components/responses/HeadersTooLarge"
+        "500":
+          $ref: "#/components/responses/GameControlError"
+
+  /api/v1/games/running:
+    options:
+      operationId: preflightRunningGame
+      summary: CORS preflight
+      tags: [Games]
+      responses:
+        "204":
+          $ref: "#/components/responses/Preflight"
+    post:
+      operationId: getRunningGame
+      summary: Report the running application, its confirmed title and pid
+      tags: [Games]
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyRequest"
+      responses:
+        "200":
+          description: Running application state
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunningResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "411":
+          $ref: "#/components/responses/LengthRequired"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "431":
+          $ref: "#/components/responses/HeadersTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/settings:
     options:
       operationId: preflightGetSettings
@@ -1881,6 +2074,22 @@ components:
           schema:
             $ref: "#/components/schemas/UninstallResponse"
 
+    GameControlError:
+      description: Key-art or launch/close refusal or system failure, with a stable error_reason
+      headers:
+        Access-Control-Allow-Origin:
+          $ref: "#/components/headers/AllowOrigin"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GameControlErrorResponse"
+          example:
+            status: 5
+            error: the system refused to launch the title
+            error_reason: launch_failed
+            native_code: -2137784309
+            native_code_hex: "0x8094000B"
+
     BadRequest:
       description: Invalid HTTP request, JSON body or title ID
       headers:
@@ -2000,6 +2209,113 @@ components:
       properties:
         title_id:
           $ref: "#/components/schemas/TitleId"
+
+    LaunchRequest:
+      type: object
+      required: [title_id]
+      properties:
+        title_id:
+          $ref: "#/components/schemas/TitleId"
+        replace:
+          type: boolean
+          default: false
+          description: Close a running application first (bounded wait of 10 s).
+
+    CloseRequest:
+      type: object
+      properties:
+        title_id:
+          $ref: "#/components/schemas/TitleId"
+      example: {}
+
+    AppId:
+      type: integer
+      format: int32
+      description: Raw signed app id; -1 (0xFFFFFFFF) when nothing runs.
+
+    AppIdHex:
+      type: string
+      pattern: "^0x[0-9A-F]{8}$"
+      example: "0x60000012"
+
+    LaunchResponse:
+      type: object
+      additionalProperties: false
+      required: [status, title_id, app_id, app_id_hex, replaced]
+      properties:
+        status:
+          type: integer
+          const: 0
+        title_id:
+          $ref: "#/components/schemas/TitleId"
+        app_id:
+          $ref: "#/components/schemas/AppId"
+        app_id_hex:
+          $ref: "#/components/schemas/AppIdHex"
+        replaced:
+          type: boolean
+          description: A running application was closed first.
+
+    CloseResponse:
+      type: object
+      additionalProperties: false
+      required: [status, closed, app_id, app_id_hex, title_id]
+      properties:
+        status:
+          type: integer
+          const: 0
+        closed:
+          type: boolean
+          const: true
+        app_id:
+          $ref: "#/components/schemas/AppId"
+        app_id_hex:
+          $ref: "#/components/schemas/AppIdHex"
+        title_id:
+          type: [string, "null"]
+          description: Confirmed title of the closed application, or null.
+
+    RunningResponse:
+      type: object
+      additionalProperties: false
+      required: [status, running, app_id, app_id_hex, title_id, pid]
+      properties:
+        status:
+          type: integer
+          const: 0
+        running:
+          type: boolean
+        app_id:
+          $ref: "#/components/schemas/AppId"
+        app_id_hex:
+          $ref: "#/components/schemas/AppIdHex"
+        title_id:
+          type: [string, "null"]
+          description: Set only when the lifecycle watcher's tracked game process has the running app id.
+        pid:
+          type: [integer, "null"]
+
+    GameControlErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [status, error, error_reason]
+      properties:
+        status:
+          type: integer
+          minimum: 1
+          description: Positive errno value
+        error:
+          type: string
+        error_reason:
+          type: string
+          enum: [invalid_title_id, launch_disabled, unknown_title, stopping, rest_mode, app_running, no_app_running, title_mismatch, running_title_unknown, close_timeout, close_failed, launch_failed, no_foreground_user, art_unavailable, art_busy]
+        native_code:
+          type: integer
+          format: int32
+          description: Signed native SCE return value (launch_failed, close_failed, no_foreground_user).
+        native_code_hex:
+          type: string
+          pattern: "^0x[0-9A-F]{8}$"
 
     GamesListRequest:
       type: object
@@ -2228,8 +2544,8 @@ components:
           type: array
           items:
             type: string
-            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, pkg_mount, ownership]
-          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, ownership]
+            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, pkg_mount, ownership, game_art, launch_game, close_game]
+          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, ownership, game_art, launch_game, close_game]
 
     OwnershipResponse:
       type: object
@@ -2570,6 +2886,10 @@ components:
         icon_url:
           type: string
           description: Relative URL of the icon endpoint, or an empty string.
+        art_url:
+          type: string
+          description: Versioned relative URL of /api/v1/games/art (tv size; append &size=card for cards). Omitted when the title has no pic1.png/pic0.png.
+          example: /api/v1/games/art?title_id=PPSA12345&v=1-1122334455667788
         app_db_size_bytes:
           type: integer
           format: int64
