@@ -83,4 +83,13 @@ static const char *const g_nl_nl[SM_L10N_COUNT] = {
     /* English: UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped. */
     [SM_L10N_KRAKEN_TAKEOVER_WAITING] =
         "UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped.",
+    /* English: UniMount: %s is running.\nUniMount starts when the game is closed. */
+    [SM_L10N_STARTUP_GAME_WAITING] =
+        "UniMount: %s is running.\nUniMount starts when the game is closed.",
+    /* English: UniMount: %s is running.\nUniMount stops when the game is closed. */
+    [SM_L10N_SHUTDOWN_DEFERRED] =
+        "UniMount: %s is running.\nUniMount stops when the game is closed.",
+    /* English: UniMount: the running UniMount did not stop.\nThis copy was not started. */
+    [SM_L10N_RESTART_ABANDONED] =
+        "UniMount: the running UniMount did not stop.\nThis copy was not started.",
 };

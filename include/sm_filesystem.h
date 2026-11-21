@@ -65,8 +65,10 @@ bool reconcile_title_backport_mount(const char *title_id, const char *src_path,
 backport_overlay_result_t mount_backport_overlay(const char *mount_point,
                                                   const char *backport_path,
                                                   const char *title_id);
-// Unmount all managed /system_ex/app/<title_id> mount stacks on shutdown.
-bool shutdown_title_mounts(void);
+// Unmount all managed /system_ex/app/<title_id> mount stacks on shutdown,
+// except those of kept_titles (live games); a kept stack counts as remaining.
+bool shutdown_title_mounts(const char kept_titles[][MAX_TITLE_ID],
+                           size_t kept_count);
 // Remove stale mount links and optionally restore image-backed mounts.
 void cleanup_mount_links(const char *removed_source_root,
                          bool unmount_system_ex_bind);

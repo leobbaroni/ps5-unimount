@@ -12,6 +12,7 @@
 #include "sm_image.h"
 #include "sm_path_utils.h"
 #include "sm_paths.h"
+#include "sm_unimount_logic.h"
 
 static bool unmount_controlled_mount_stack(const char *path);
 static bool unmount_controlled_mount_stack_impl(const char *path,
@@ -1674,10 +1675,17 @@ void cleanup_usb_mount_links_for_suspend(void) {
                          cleanup_mount_links_entry, &ctx);
 }
 
+typedef struct {
+  bool all_released;
+  const char (*kept_titles)[MAX_TITLE_ID];
+  size_t kept_count;
+} shutdown_title_mounts_ctx_t;
+
 static bool shutdown_title_mounts_entry(const char *title_id,
                                         const title_link_paths_t *paths,
-                                        void *ctx) {
-  bool *all_released = (bool *)ctx;
+                                        void *ctx_ptr) {
+  shutdown_title_mounts_ctx_t *ctx = (shutdown_title_mounts_ctx_t *)ctx_ptr;
+  bool *all_released = &ctx->all_released;
 
   char source_path[MAX_PATH];
   if (!read_mount_link_file(paths->mount_link, source_path, sizeof(source_path))) {
@@ -1691,6 +1699,13 @@ static bool shutdown_title_mounts_entry(const char *title_id,
   }
   if (!state.has_our_nullfs)
     return true;
+  if (sm_title_list_contains(ctx->kept_titles, ctx->kept_count, title_id)) {
+    // Never rely on EBUSY under a live game: its stack stays untouched and,
+    // like a busy stack before, keeps the image teardown from running.
+    log_debug("  [LINK] shutdown kept %s of live game", state.system_ex_path);
+    *all_released = false;
+    return true;
+  }
   if (!title_stack_top_is_managed(&state)) {
     log_debug("  [LINK] shutdown stack blocked by unmanaged top for %s",
               state.system_ex_path);
@@ -1706,11 +1721,16 @@ static bool shutdown_title_mounts_entry(const char *title_id,
   return true;
 }
 
-bool shutdown_title_mounts(void) {
-  bool all_released = true;
+bool shutdown_title_mounts(const char kept_titles[][MAX_TITLE_ID],
+                           size_t kept_count) {
+  shutdown_title_mounts_ctx_t ctx = {
+      .all_released = true,
+      .kept_titles = kept_titles,
+      .kept_count = kept_count,
+  };
   if (!for_each_title_app_dir(" during shutdown", false,
-                              shutdown_title_mounts_entry, &all_released)) {
-    all_released = false;
+                              shutdown_title_mounts_entry, &ctx)) {
+    ctx.all_released = false;
   }
-  return all_released;
+  return ctx.all_released;
 }

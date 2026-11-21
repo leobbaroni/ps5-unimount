@@ -2,8 +2,11 @@
 #define SM_PKG_BACKPORT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+
+#include "sm_limits.h"
 
 // Add child NSFS redirects immediately before the package process is spawned.
 // Files use plain redirects; missing directory subtrees use overlays. Up to
@@ -23,7 +26,12 @@ void sm_pkg_backport_on_exit(pid_t pid);
 // Bounded EBUSY cleanup on the shared lifecycle watcher. Zero means disabled.
 uint64_t sm_pkg_backport_next_cleanup_us(void);
 void sm_pkg_backport_poll_cleanup(void);
-// Best-effort cleanup of every redirect owned by this payload.
-void sm_pkg_backport_shutdown(void);
+// Best-effort cleanup of every redirect owned by this payload. Redirects of a
+// live, launching or handing-off game (handoff_title_id, NULL if none) are
+// kept and logged, also on later calls.
+void sm_pkg_backport_shutdown(const char *handoff_title_id);
+// Add the titles whose redirects a shutdown kept.
+void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
+                                     size_t *count, size_t max);
 
 #endif

@@ -316,6 +316,66 @@ sm_adopt_t sm_takeover_adoption(const sm_adopt_facts_t *facts) {
   return facts->legacy_mount_present ? SM_ADOPT_LATER : SM_ADOPT_YES;
 }
 
+// --- Startup, replacement and shutdown around a running game ---
+
+sm_startup_decision_t sm_startup_decide(const sm_startup_facts_t *facts) {
+  if (!facts || !facts->app_running)
+    return SM_STARTUP_PROCEED;
+  // An unknown title may be ours: waiting is the safe side.
+  if (!facts->title_known || facts->managed)
+    return SM_STARTUP_WAIT;
+  return SM_STARTUP_PROCEED;
+}
+
+sm_restart_timeout_t sm_restart_timeout_decide(bool app_running) {
+  // A predecessor that defers its stop does so for a running game.
+  return app_running ? SM_RESTART_WAIT_FOR_APP : SM_RESTART_GIVE_UP;
+}
+
+sm_stop_decision_t sm_stop_decide(unsigned requests, bool immediate,
+                                  bool game_active) {
+  if (immediate || requests >= 2u)
+    return SM_STOP_NOW;
+  if (requests == 0)
+    return SM_STOP_NONE;
+  return game_active ? SM_STOP_DEFER : SM_STOP_NOW;
+}
+
+bool sm_shutdown_keeps_game_layers(const sm_layer_owner_facts_t *facts) {
+  if (!facts || !facts->has_layers)
+    return false;
+  if (facts->pid > 0 && facts->pid_alive)
+    return true;
+  if (!facts->sandbox_exists)
+    return false;
+  // No process yet: the launch is still in progress in that sandbox.
+  return facts->pid <= 0 || facts->handoff_pending;
+}
+
+bool sm_title_list_contains(const char list[][MAX_TITLE_ID], size_t count,
+                            const char *title_id) {
+  if (!list || !title_id)
+    return false;
+  for (size_t i = 0; i < count; ++i)
+    if (strcmp(list[i], title_id) == 0)
+      return true;
+  return false;
+}
+
+bool sm_title_list_add(char list[][MAX_TITLE_ID], size_t *count, size_t max,
+                       const char *title_id) {
+  if (!list || !count || !title_id ||
+      !valid_title_id(title_id, strlen(title_id)))
+    return false;
+  if (sm_title_list_contains((const char (*)[MAX_TITLE_ID])list, *count,
+                             title_id))
+    return true;
+  if (*count >= max)
+    return false;
+  (void)copy_text(list[(*count)++], MAX_TITLE_ID, title_id);
+  return true;
+}
+
 // --- Ownership ledger ---
 
 bool sm_owner_ledger_format(char *out, size_t out_size, const char *product,

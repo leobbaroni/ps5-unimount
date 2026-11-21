@@ -79,22 +79,32 @@ From `main()` in `src/main.c`.
 Startup:
 
 1. Initialise user service and app-install utilities; install signal handlers.
-2. Find an older `shadowmountplus.elf`; if one exists, ask it to exit and wait. Set this process's thread name to `shadowmountplus.elf`.
-3. Clear a stale STOP file; rotate the log; load or migrate the configuration; initialise the scanner service.
-4. Wait for kstuff; stop a standalone BackPork if one runs.
-5. Kraken Mount takeover (`sm_takeover_run`), then write the ownership ledger.
-6. Start the compatible listener (8097) and the automatic `.pkg` mount.
-7. Start mdbg, the ShellCore service and hooks, the launcher tile, the lifecycle watcher, the ShellCore flags monitor, the AMPR updater.
-8. Remount `/system_ex` writable, notify, clean stale mount directories, wait for `/dev/lvd2` to be released, clean staged links and duplicate title mounts, run app.db maintenance.
-9. Startup scan, then the HTTP API on 10101, then the steady-state scan loop.
+2. Running managed game: if a big app runs (`sceSystemServiceGetAppIdOfRunningBigApp() > 0`) and its title is ours (`/user/app/<TID>/mount.lnk`, `mount_img.lnk` or `mount.lnk.cleanup`, or a nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be determined, stay passive (no signal to an older instance, no mount, scan, hook or service) and check again every 3 s; signals end the wait at once. Unmanaged apps (retail games, `NPXS` system apps) do not delay startup. Rule: `sm_startup_decide`.
+3. Find an older `shadowmountplus.elf`; if one exists, ask it to exit (one SIGTERM per instance) and wait up to 60 s, then repeat step 2 (a game may have started meanwhile). If it is still alive after 60 s: while a big app runs it deferred its stop for that game, so wait for the app to close and keep waiting for it; otherwise exit without starting (`sm_restart_timeout_decide`). Two instances never run together. Set this process's thread name to `shadowmountplus.elf`.
+4. Clear a stale STOP file; rotate the log; load or migrate the configuration; initialise the scanner service.
+5. Wait for kstuff; stop a standalone BackPork if one runs.
+6. Kraken Mount takeover (`sm_takeover_run`), then write the ownership ledger.
+7. Start the compatible listener (8097) and the automatic `.pkg` mount.
+8. Start mdbg, the ShellCore service and hooks, the launcher tile, the lifecycle watcher, the ShellCore flags monitor, the AMPR updater.
+9. Remount `/system_ex` writable, notify, clean stale mount directories, wait for `/dev/lvd2` to be released, clean staged links and duplicate title mounts, run app.db maintenance.
+10. Startup scan, then the HTTP API on 10101, then the steady-state scan loop.
+
+Lines written while waiting in steps 2-3 go to the current `debug.log` (with a predecessor, interleaved with its own log), which becomes `debug.log.1` at step 4.
+
+Stop requests (`should_stop_requested`, rule `sm_stop_decide`):
+
+- A signal or the STOP file is a deferrable request. While the lifecycle watcher tracks an active game (`sm_game_lifecycle_has_active_game()`, including a pending same-app handoff), the stop is deferred: logged and notified once, everything keeps running, and the shutdown starts once that game has exited and its on-exit cleanup has run.
+- A second request while deferred stops at once. So do requests that cannot wait: the console shutting down (`SceSystemStateMgrInfo=SHUTDOWN_ON_GOING`) and a scanner failure.
 
 Shutdown (also reached on a failed or interrupted startup step):
 
 1. Stop the automatic mount, then the compatible listener, the AMPR updater and the API service.
-2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service.
+2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service. As the lifecycle watcher stops it tears down the fakelib sandbox layers and NSFS backport redirects, except those of a game that is still alive, still launching in its sandbox, or in a same-app handoff (`sm_shutdown_keeps_game_layers`): those are kept and each one is logged.
 3. Shut down the scanner; stop diagnostics (it reads mdbg and app.db, so it goes before them); shut down mdbg.
-4. Release title layers, then image mounts. Only if both succeed is the kstuff no-automount sentinel removed.
+4. Release title layers, then image mounts. The `/system_ex/app/<TID>` stack of a live game is kept without an unmount attempt; a kept stack counts as remaining, so image teardown is skipped as for a busy stack. Only if both succeed is the kstuff no-automount sentinel removed.
 5. Shut down app.db access, remove the ownership ledger, close the log.
+
+Layers kept for a live game are not adopted by a later instance; see "Stopping with a game running" in [`unimount-ownership.md`](unimount-ownership.md).
 
 ## Paths and ports on the console
 

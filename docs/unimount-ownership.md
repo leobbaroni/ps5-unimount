@@ -12,10 +12,27 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
 
 ## Startup order
 
+0. **A running managed game comes first.** Before anything else (no signal
+   to an older instance, no takeover, mount, scan, hook or service), UniMount
+   checks the running big app. If it is one of our titles (`mount.lnk`,
+   `mount_img.lnk` or `mount.lnk.cleanup` in `/user/app/<TID>`, or a
+   nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be
+   determined, UniMount waits: it logs and notifies once, checks every 3 s and
+   exits at once on a signal (the STOP file too when no older instance runs).
+   A retail game or a system app does not delay startup. This is the rule
+   UniMount already follows for a game running under real Kraken Mount, now
+   applied to every predecessor and to a start without one (recovery after a
+   crash).
 1. An older `shadowmountplus.elf` (real ShadowMountPlus or an older UniMount)
-   is asked to exit (SIGTERM) and awaited, as before. The thread is then named
-   `shadowmountplus.elf`; a real Kraken Mount started later sees that name and
-   does not mount anything.
+   is asked to exit (one SIGTERM per instance) and awaited for up to 60 s;
+   then step 0 is checked again. An instance still alive after 60 s while a
+   big app runs has deferred its stop for that game (see "Stopping with a
+   game running"): UniMount waits for the app to close and for the instance
+   to exit, without asking again (a second request would force it). Still
+   alive with no app running: UniMount exits without starting, with a log
+   line and a notification. Two instances never run together. The thread is
+   then named `shadowmountplus.elf`; a real Kraken Mount started later sees
+   that name and does not mount anything.
 2. Configuration, log and notifications start; the log line reads
    `UniMount <ver> (ShadowMount+ <tag>, Kraken Mount <release> rev <commit>)`.
 3. kstuff is awaited (unchanged).
@@ -64,6 +81,47 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
    ShadowMountPlus.
 
 `GET /api/v1/ownership` reports all of the above (see `docs/api.md`).
+
+## Stopping with a game running
+
+The sandbox layers UniMount adds to a game (fakelib overlay on `common/lib`,
+`/data` and storage aliases, fonts, and for Kraken titles the writable `app0`
+cover and the read-only `app0/kraken` package folder), its NSFS backport
+redirects and its `/system_ex/app/<TID>` stack are recorded only in the
+running instance. A stop therefore never pulls them from under a live game:
+
+- A signal or the STOP file while the lifecycle watcher tracks a game defers
+  the stop. UniMount keeps working normally and shuts down as soon as that
+  game has exited and its on-exit cleanup has run.
+- A second request while deferred, the console shutting down, or a scanner
+  failure stops at once. Layers of a game that is still alive, still
+  launching in its sandbox, or in a same-app handoff are then kept, without
+  an unmount attempt; everything else is shut down as before.
+- Kept layers have no owner afterwards: a later instance does not adopt or
+  remove them (it stays passive while a managed game runs, see step 0). The
+  `/system_ex/app/<TID>` stack is released by the scanner's normal cleanup
+  once nothing uses it; sandbox layers stay until ShellCore or a reboot
+  removes the sandbox.
+
+Log lines (in `debug.log`; after the next start in `debug.log.1`):
+
+| Line | Meaning |
+| --- | --- |
+| `[STARTUP] <TID> is running; waiting for it to close before starting` | Step 0 wait began (`a game` when the title is unknown). |
+| `[STARTUP] stop requested while waiting for <TID> to close` | A signal or STOP file ended the wait; nothing was started. |
+| `[STARTUP] <TID> closed; started after waiting <N> s` | First lines after the log rotation, once the wait ended. |
+| `[RESTART] previous instance pid=<pid> deferred its stop for a running game; waiting for the game to close` | Step 1 timed out while a big app runs. |
+| `[RESTART] previous instance pid=<pid> did not stop within 60 s; not starting alongside it` | Step 1 gave up; this copy exits. |
+| `[SHUTDOWN] stop request <n> received (signal\|STOP file ...)` | Each new stop request. |
+| `[SHUTDOWN] deferred: <TID> is running` | First request with an active game. |
+| `[SHUTDOWN] game closed; continuing the deferred shutdown` | The deferred stop proceeds. |
+| `[SHUTDOWN] stopping now while <TID> is running (<reason>); its layers are kept` | Forced or immediate stop with a live game. |
+| `  [GAME] stopping with a live game: <TID> pid=<pid>` | The lifecycle watcher stopped while the game process was alive. |
+| `  [FAKELIB] shutdown kept <label> layer of live game <TID> pid=<pid>: <source> -> <target>` | One per kept sandbox layer. |
+| `  [FAKELIB] shutdown retained <label> layer of <TID>: <source> -> <target> (<error>)` | Teardown of a stopped game's layer failed. |
+| `  [BKP][NSFS] shutdown kept redirects of live game: title=<TID> pid=<pid> count=<n>` | Backport redirects kept. |
+| `  [LINK] shutdown kept /system_ex/app/<TID> of live game` | Title stack kept; image teardown is skipped. |
+| `[SHUTDOWN] cleanup complete for <signal\|STOP file ...\|reason>` | End of any shutdown that followed a stop request. |
 
 ## Kraken-compatible listener (`[compat]`)
 

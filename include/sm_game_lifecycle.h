@@ -27,5 +27,8 @@ void sm_game_lifecycle_invalidate_app_focus(void);
 bool refresh_game_lifecycle_watcher(void);
 // UniMount: pid of the tracked live game process, or 0 when none.
 int32_t sm_game_lifecycle_active_pid(void);
+// After stop_game_lifecycle_watcher(): the title whose process was still
+// alive when the watcher stopped (its layers are kept), else false.
+bool sm_game_lifecycle_shutdown_live_title(char title_id[MAX_TITLE_ID]);
 
 #endif

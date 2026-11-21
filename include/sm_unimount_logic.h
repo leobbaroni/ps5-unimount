@@ -74,6 +74,64 @@ typedef enum {
 
 sm_adopt_t sm_takeover_adoption(const sm_adopt_facts_t *facts);
 
+// --- Startup, replacement and shutdown around a running game ---
+
+typedef struct {
+  bool predecessor;  // another UniMount instance is running (informational)
+  bool app_running;  // sceSystemServiceGetAppIdOfRunningBigApp() > 0
+  bool title_known;  // the running application's title id was determined
+  bool managed;      // that title has our link files or a nullfs on
+                     // /system_ex/app/<TID>
+} sm_startup_facts_t;
+
+typedef enum {
+  SM_STARTUP_PROCEED = 0,  // signal the predecessor / start services now
+  SM_STARTUP_WAIT,         // stay passive until the managed game is closed
+} sm_startup_decision_t;
+
+// A running managed title, or one whose title id is unknown, keeps a new
+// instance passive, with or without a predecessor. Unmanaged apps do not.
+sm_startup_decision_t sm_startup_decide(const sm_startup_facts_t *facts);
+
+typedef enum {
+  SM_RESTART_WAIT_FOR_APP = 0,  // predecessor deferred for a game: wait again
+  SM_RESTART_GIVE_UP,           // predecessor stuck without a game: exit
+} sm_restart_timeout_t;
+
+// The predecessor did not exit within the takeover timeout. Never continue
+// alongside it.
+sm_restart_timeout_t sm_restart_timeout_decide(bool app_running);
+
+typedef enum {
+  SM_STOP_NONE = 0,  // no stop request
+  SM_STOP_NOW,       // shut down now
+  SM_STOP_DEFER,     // keep running until the active game has exited
+} sm_stop_decision_t;
+
+// requests counts deferrable stop requests (signals, STOP file). immediate is
+// a stop that cannot wait (console shutting down, scanner failure). A second
+// deferrable request forces the stop.
+sm_stop_decision_t sm_stop_decide(unsigned requests, bool immediate,
+                                  bool game_active);
+
+typedef struct {
+  bool has_layers;       // the session still holds mounts or redirects
+  int32_t pid;           // game process bound to the session, 0 before exec
+  bool pid_alive;        // that process still exists
+  bool handoff_pending;  // the lifecycle awaits a same-app replacement for it
+  bool sandbox_exists;   // a /mnt/sandbox/<TID>_NNN directory exists
+} sm_layer_owner_facts_t;
+
+// A shutdown keeps a session's sandbox layers when they may still be in use:
+// a live process, a launch not yet bound to a process, or a same-app handoff.
+bool sm_shutdown_keeps_game_layers(const sm_layer_owner_facts_t *facts);
+
+// Small set of title ids (no duplicates, invalid ids rejected).
+bool sm_title_list_add(char list[][MAX_TITLE_ID], size_t *count, size_t max,
+                       const char *title_id);
+bool sm_title_list_contains(const char list[][MAX_TITLE_ID], size_t count,
+                            const char *title_id);
+
 // --- Ownership ledger (/data/shadowmount/owner.json) ---
 
 bool sm_owner_ledger_format(char *out, size_t out_size, const char *product,

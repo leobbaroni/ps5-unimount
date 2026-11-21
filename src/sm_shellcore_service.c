@@ -1468,7 +1468,7 @@ bool sm_shellcore_service_start(void) {
 
 void sm_shellcore_service_stop(void) {
   if (!g_service.started) {
-    sm_pkg_backport_shutdown();
+    sm_pkg_backport_shutdown(NULL);
     return;
   }
   pthread_mutex_lock(&g_service.mutex);
@@ -1485,7 +1485,7 @@ void sm_shellcore_service_stop(void) {
   pthread_cond_broadcast(&g_service.cond);
   pthread_mutex_unlock(&g_service.mutex);
   pthread_join(g_service.thread, NULL);
-  sm_pkg_backport_shutdown();
+  sm_pkg_backport_shutdown(NULL);
   pthread_mutex_lock(&g_service.mutex);
   g_service.started = false;
   g_service.stop_requested = false;

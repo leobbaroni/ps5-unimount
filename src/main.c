@@ -21,7 +21,10 @@
 #include "sm_game_lifecycle.h"
 #include "sm_mount_device.h"
 #include "sm_filesystem.h"
+#include "sm_fakelib.h"
+#include "sm_gameinfo.h"
 #include "sm_image.h"
+#include "sm_pkg_backport.h"
 #include "sm_path_utils.h"
 #include "sm_scan.h"
 #include "sm_scanner.h"
@@ -37,6 +40,7 @@
 #include "sm_kraken_compat.h"
 #include "sm_takeover.h"
 #include "sm_unimount.h"
+#include "sm_unimount_logic.h"
 
 #ifndef SHADOWMOUNT_VERSION
 #define SHADOWMOUNT_VERSION "unknown"
@@ -60,7 +64,18 @@
 #define AUTHID_BASE 0x4800000000000006ull
 
 
-static volatile sig_atomic_t g_stop_requested = 0;
+#define STARTUP_GAME_POLL_US 3000000u
+#define STARTUP_STOP_POLL_US 200000u
+
+// Deferrable stop requests: signals (counted by the handler) and the STOP
+// file. A first request waits for an active game; a second one forces.
+static volatile sig_atomic_t g_stop_signals = 0;
+static atomic_uint g_stop_file_requests = 0;
+static atomic_uint g_stop_requests_seen = 0;
+static atomic_bool g_stop_latched = false;
+static atomic_bool g_stop_deferred = false;
+static char g_stop_latched_reason[128];
+// Stops that cannot wait for a game (console shutdown, scanner failure).
 static atomic_bool g_shutdown_on_going_stop_requested = false;
 static atomic_bool g_runtime_sleep_mode_active = false;
 static atomic_uint_fast64_t g_runtime_resume_grace_deadline_us = 0;
@@ -114,7 +129,8 @@ static void resolve_web_interface_address(const char *bind_address,
 static void on_signal(int sig) {
   int saved_errno = errno;
   (void)sig;
-  g_stop_requested = 1;
+  if (g_stop_signals < 100)
+    g_stop_signals = g_stop_signals + 1;
   sm_scanner_wake();
   errno = saved_errno;
 }
@@ -133,30 +149,99 @@ void install_signal_handlers(void) {
   sigaction(SIGPIPE, &sa, NULL);
 }
 
-bool should_stop_requested(void) {
-  if (g_stop_requested ||
-      atomic_load_explicit(&g_shutdown_on_going_stop_requested,
-                            memory_order_acquire))
-    return true;
-
+static void poll_stop_file(void) {
   uint64_t now_us = monotonic_time_us();
   if (now_us != 0) {
     uint64_t next_poll_us =
         atomic_load_explicit(&g_next_stop_file_poll_us, memory_order_acquire);
     if (next_poll_us != 0 && now_us < next_poll_us)
-      return false;
+      return;
     if (!atomic_compare_exchange_strong_explicit(
             &g_next_stop_file_poll_us, &next_poll_us,
             now_us + STOP_FILE_POLL_INTERVAL_US, memory_order_acq_rel,
             memory_order_acquire))
-      return false;
+      return;
   }
 
-  if (remove(KILL_FILE) == 0) {
-    request_shutdown_stop("STOP file " KILL_FILE);
-    return true;
+  if (remove(KILL_FILE) == 0)
+    atomic_fetch_add_explicit(&g_stop_file_requests, 1u, memory_order_acq_rel);
+}
+
+static unsigned deferrable_stop_requests(void) {
+  return (unsigned)g_stop_signals +
+         atomic_load_explicit(&g_stop_file_requests, memory_order_acquire);
+}
+
+// Title of the active game for log lines and notifications.
+static void active_game_label(char title_id[MAX_TITLE_ID]) {
+  (void)sm_game_lifecycle_background_title(title_id);
+  if (title_id[0] == '\0')
+    (void)strlcpy(title_id, "a game", MAX_TITLE_ID);
+}
+
+static void latch_stop(bool immediate, bool game_active) {
+  if (atomic_exchange_explicit(&g_stop_latched, true, memory_order_acq_rel))
+    return;
+  const char *reason = "STOP file " KILL_FILE;
+  if (immediate) {
+    reason = (const char *)atomic_load_explicit(&g_shutdown_stop_reason_bits,
+                                                memory_order_acquire);
+    if (!reason)
+      reason = "unknown shutdown source";
+  } else if (g_stop_signals != 0) {
+    reason = "signal";
   }
-  return false;
+  (void)strlcpy(g_stop_latched_reason, reason, sizeof(g_stop_latched_reason));
+  char title_id[MAX_TITLE_ID];
+  active_game_label(title_id);
+  if (game_active) {
+    log_debug("[SHUTDOWN] stopping now while %s is running (%s); its layers "
+              "are kept", title_id,
+              immediate ? reason : "second stop request");
+  } else if (atomic_load_explicit(&g_stop_deferred, memory_order_acquire)) {
+    log_debug("[SHUTDOWN] game closed; continuing the deferred shutdown");
+  }
+  sm_scanner_wake();
+  wake_game_lifecycle_watcher();
+}
+
+bool should_stop_requested(void) {
+  if (atomic_load_explicit(&g_stop_latched, memory_order_acquire))
+    return true;
+
+  poll_stop_file();
+  unsigned requests = deferrable_stop_requests();
+  bool immediate = atomic_load_explicit(&g_shutdown_on_going_stop_requested,
+                                        memory_order_acquire);
+  if (requests == 0 && !immediate)
+    return false;
+
+  unsigned seen = atomic_load_explicit(&g_stop_requests_seen,
+                                       memory_order_acquire);
+  if (requests > seen &&
+      atomic_compare_exchange_strong_explicit(&g_stop_requests_seen, &seen,
+                                              requests, memory_order_acq_rel,
+                                              memory_order_acquire)) {
+    log_debug("[SHUTDOWN] stop request %u received (%s)", requests,
+              g_stop_signals != 0 ? "signal" : "STOP file " KILL_FILE);
+  }
+
+  bool game_active = sm_game_lifecycle_has_active_game();
+  sm_stop_decision_t decision = sm_stop_decide(requests, immediate, game_active);
+  if (decision == SM_STOP_NONE)
+    return false;
+  if (decision == SM_STOP_DEFER) {
+    if (!atomic_exchange_explicit(&g_stop_deferred, true,
+                                  memory_order_acq_rel)) {
+      char title_id[MAX_TITLE_ID];
+      active_game_label(title_id);
+      log_debug("[SHUTDOWN] deferred: %s is running", title_id);
+      notify_system_l10n(SM_L10N_SHUTDOWN_DEFERRED, title_id);
+    }
+    return false;
+  }
+  latch_stop(immediate, game_active);
+  return true;
 }
 
 void request_shutdown_stop(const char *reason) {
@@ -392,35 +477,193 @@ pid_t find_pid_by_name(const char *name, bool exclude_self) {
   return found_pid;
 }
 
-static bool wait_for_existing_instance_exit(pid_t target_pid) {
-  pid_t last_signaled_pid = 0;
+typedef enum {
+  RESTART_EXITED = 0,
+  RESTART_TIMED_OUT,
+  RESTART_FAILED,
+} restart_wait_t;
+
+// *last_signaled_pid persists across calls: a predecessor that deferred its
+// stop is not asked again, since a second request would force it.
+static restart_wait_t wait_for_existing_instance_exit(
+    pid_t target_pid, pid_t *last_signaled_pid) {
   for (unsigned int waited_us = 0; waited_us <= RESTART_WAIT_MAX_US;
        waited_us += RESTART_WAIT_POLL_US) {
-    if (target_pid != last_signaled_pid) {
+    if (target_pid != *last_signaled_pid) {
       if (kill(target_pid, SIGTERM) == 0) {
         printf("[RESTART] Requested shutdown of running instance pid=%ld.\n",
                (long)target_pid);
-        last_signaled_pid = target_pid;
+        *last_signaled_pid = target_pid;
       } else if (errno != ESRCH) {
         printf("[RESTART] Failed to signal pid=%ld: %s\n", (long)target_pid,
                strerror(errno));
-        return false;
+        return RESTART_FAILED;
       }
     }
 
     target_pid = find_pid_by_name(PAYLOAD_NAME, true);
     if (target_pid == 0)
-      return true;
+      return RESTART_EXITED;
     if (target_pid < 0) {
       printf("[RESTART] Failed to enumerate running processes.\n");
-      return false;
+      return RESTART_FAILED;
     }
     if (sleep_with_stop_check(RESTART_WAIT_POLL_US))
-      return false;
+      return RESTART_FAILED;
   }
 
   printf("[RESTART] Timed out waiting for previous instance to exit.\n");
-  return false;
+  return RESTART_TIMED_OUT;
+}
+
+// 1: title of the process running app_id found, 0: none, -1: no process list.
+static int find_title_of_app(int32_t app_id, char title_id[MAX_TITLE_ID]) {
+  title_id[0] = '\0';
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
+  size_t buf_size = 0;
+  if (sysctl(mib, 4, NULL, &buf_size, NULL, 0) != 0)
+    return -1;
+  if (buf_size == 0)
+    return 0;
+  uint8_t *buf = malloc(buf_size);
+  if (!buf)
+    return -1;
+  if (sysctl(mib, 4, buf, &buf_size, NULL, 0) != 0) {
+    free(buf);
+    return -1;
+  }
+
+  int found = 0;
+  uint8_t *ptr = buf;
+  uint8_t *end = buf + buf_size;
+  while ((size_t)(end - ptr) >= sizeof(int)) {
+    int ki_structsize = 0;
+    memcpy(&ki_structsize, ptr, sizeof(ki_structsize));
+    if (ki_structsize <= KINFO_PID_OFFSET + (int)sizeof(pid_t) ||
+        (size_t)ki_structsize > (size_t)(end - ptr)) {
+      found = -1;
+      break;
+    }
+    pid_t ki_pid = 0;
+    memcpy(&ki_pid, &ptr[KINFO_PID_OFFSET], sizeof(ki_pid));
+    ptr += ki_structsize;
+    app_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (ki_pid <= 0 || sceKernelGetAppInfo(ki_pid, &info) != 0 ||
+        info.app_id != (uint32_t)app_id)
+      continue;
+    size_t length = strnlen(info.title_id, sizeof(info.title_id));
+    if (length == 0 || length >= MAX_TITLE_ID)
+      continue;
+    memcpy(title_id, info.title_id, length);
+    title_id[length] = '\0';
+    found = 1;
+    break;
+  }
+  free(buf);
+  return found;
+}
+
+// Our registration of the title, or any nullfs/unionfs on its app path.
+static bool title_is_managed_here(const char *title_id) {
+  static const char *const links[] = {"mount.lnk", "mount_img.lnk",
+                                      "mount.lnk.cleanup"};
+  char path[MAX_PATH];
+  struct stat st;
+  for (size_t i = 0; i < sizeof(links) / sizeof(links[0]); ++i) {
+    int written = snprintf(path, sizeof(path), "%s/%s/%s", APP_BASE, title_id,
+                           links[i]);
+    if (written > 0 && (size_t)written < sizeof(path) && lstat(path, &st) == 0)
+      return true;
+  }
+  int written = snprintf(path, sizeof(path), "/system_ex/app/%s", title_id);
+  struct statfs fs;
+  return written > 0 && (size_t)written < sizeof(path) &&
+         statfs(path, &fs) == 0 && strcmp(fs.f_mntonname, path) == 0 &&
+         (strcmp(fs.f_fstypename, "nullfs") == 0 ||
+          strcmp(fs.f_fstypename, "unionfs") == 0);
+}
+
+static sm_startup_decision_t check_running_game(bool predecessor,
+                                                char title_id[MAX_TITLE_ID]) {
+  sm_startup_facts_t facts = {.predecessor = predecessor};
+  int32_t app_id = sceSystemServiceGetAppIdOfRunningBigApp();
+  facts.app_running = app_id > 0;
+  title_id[0] = '\0';
+  if (facts.app_running) {
+    facts.title_known = find_title_of_app(app_id, title_id) > 0 &&
+                        strlen(title_id) == 9u &&
+                        strspn(title_id, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                         "0123456789") == 9u;
+    // System apps (NPXS) are known but never registered by us.
+    facts.managed = facts.title_known &&
+                    is_supported_game_title_id(title_id) &&
+                    title_is_managed_here(title_id);
+  }
+  if (!facts.title_known)
+    (void)strlcpy(title_id, "a game", MAX_TITLE_ID);
+  return sm_startup_decide(&facts);
+}
+
+// Sleeps up to STARTUP_GAME_POLL_US; false when a signal arrived.
+static bool startup_poll_sleep(void) {
+  for (unsigned int slept = 0; slept < STARTUP_GAME_POLL_US;
+       slept += STARTUP_STOP_POLL_US) {
+    if (g_stop_signals != 0)
+      return false;
+    (void)sceKernelUsleep(STARTUP_STOP_POLL_US);
+  }
+  return g_stop_signals == 0;
+}
+
+static char g_startup_waited_title[MAX_TITLE_ID];
+static uint64_t g_startup_waited_us;
+
+// Before any takeover, mount, scan, hook or service: stay passive while a
+// managed game runs. Without a predecessor the STOP file also ends the wait
+// (with one, it belongs to the predecessor). False when stopped.
+static bool wait_while_managed_game_runs(void) {
+  bool waiting = false;
+  uint64_t started_us = monotonic_time_us();
+  char title_id[MAX_TITLE_ID];
+  for (;;) {
+    if (g_stop_signals != 0)
+      return false;
+    pid_t predecessor = find_pid_by_name(PAYLOAD_NAME, true);
+    if (waiting && predecessor == 0 && remove(KILL_FILE) == 0)
+      return false;
+    if (check_running_game(predecessor > 0, title_id) == SM_STARTUP_PROCEED) {
+      if (waiting) {
+        uint64_t now_us = monotonic_time_us();
+        g_startup_waited_us += now_us > started_us ? now_us - started_us : 0;
+      }
+      return true;
+    }
+    if (!waiting) {
+      if (predecessor == 0 && remove(KILL_FILE) == 0)
+        printf("[STOP] Cleared stale stop flag before waiting: %s\n", KILL_FILE);
+      log_debug("[STARTUP] %s is running; waiting for it to close before "
+                "starting", title_id);
+      notify_system_l10n(SM_L10N_STARTUP_GAME_WAITING, title_id);
+      (void)strlcpy(g_startup_waited_title, title_id,
+                    sizeof(g_startup_waited_title));
+      waiting = true;
+    }
+    if (!startup_poll_sleep())
+      return false;
+  }
+}
+
+// The predecessor deferred its stop for a game: wait for that app to close
+// (or the predecessor to go away). False when stopped.
+static bool wait_while_predecessor_defers(void) {
+  for (;;) {
+    if (sceSystemServiceGetAppIdOfRunningBigApp() <= 0 ||
+        find_pid_by_name(PAYLOAD_NAME, true) == 0)
+      return true;
+    if (!startup_poll_sleep())
+      return false;
+  }
 }
 
 static void log_non_empty_scan_paths(void) {
@@ -564,24 +807,62 @@ int main(void) {
   install_signal_handlers();
 
   mkdir(LOG_DIR, 0777);
-  existing_pid = find_pid_by_name(PAYLOAD_NAME, true);
-  if (existing_pid < 0) {
-    printf("[RESTART] Failed to enumerate running processes.\n");
-    sceUserServiceTerminate();
-    return 1;
-  }
-  if (!ensure_kstuff_noautomount_file()) {
-    sceUserServiceTerminate();
-    return 1;
-  }
-  if (existing_pid > 0) {
+  // Never start (or replace a predecessor) under a running managed game, and
+  // never run alongside a predecessor that did not stop.
+  pid_t signaled_pid = 0;
+  bool deferral_logged = false;
+  for (;;) {
+    if (!wait_while_managed_game_runs()) {
+      log_debug("[STARTUP] stop requested while waiting for %s to close",
+                g_startup_waited_title[0] ? g_startup_waited_title : "a game");
+      sceUserServiceTerminate();
+      return 0;
+    }
+    existing_pid = find_pid_by_name(PAYLOAD_NAME, true);
+    if (existing_pid < 0) {
+      printf("[RESTART] Failed to enumerate running processes.\n");
+      sceUserServiceTerminate();
+      return 1;
+    }
+    if (!ensure_kstuff_noautomount_file()) {
+      sceUserServiceTerminate();
+      return 1;
+    }
+    if (existing_pid == 0)
+      break;
     printf("[RESTART] Another instance is already running.\n");
-    if (!wait_for_existing_instance_exit(existing_pid)) {
+    restart_wait_t waited =
+        wait_for_existing_instance_exit(existing_pid, &signaled_pid);
+    if (waited == RESTART_EXITED) {
+      restarted_previous_instance = true;
+      continue;  // a game may have started meanwhile
+    }
+    if (waited == RESTART_FAILED) {
       printf("[KSTUFF] Keeping automount sentinel after failed handoff.\n");
       sceUserServiceTerminate();
       return 0;
     }
-    restarted_previous_instance = true;
+    bool app_running = sceSystemServiceGetAppIdOfRunningBigApp() > 0;
+    if (sm_restart_timeout_decide(app_running) == SM_RESTART_GIVE_UP) {
+      log_debug("[RESTART] previous instance pid=%ld did not stop within %u s; "
+                "not starting alongside it",
+                (long)existing_pid, RESTART_WAIT_MAX_US / 1000000u);
+      notify_system_l10n(SM_L10N_RESTART_ABANDONED);
+      sceUserServiceTerminate();
+      return 0;
+    }
+    if (!deferral_logged) {
+      log_debug("[RESTART] previous instance pid=%ld deferred its stop for a "
+                "running game; waiting for the game to close",
+                (long)existing_pid);
+      deferral_logged = true;
+    }
+    if (!wait_while_predecessor_defers()) {
+      log_debug("[STARTUP] stop requested while the previous instance waits "
+                "for a game");
+      sceUserServiceTerminate();
+      return 0;
+    }
   }
   // Older builds removed the sentinel unconditionally during shutdown.
   // Recreate it after handoff before starting any mount work.
@@ -618,6 +899,10 @@ int main(void) {
       UNIMOUNT_PRODUCT, UNIMOUNT_VERSION, SHADOWMOUNT_VERSION,
       KRAKEN_MOUNT_RELEASE, KRAKEN_MOUNT_REVISION, firmware_version,
       SHADOWMOUNT_BUILD_TIME);
+  if (g_startup_waited_title[0] != '\0')
+    log_debug("[STARTUP] %s closed; started after waiting %llu s",
+              g_startup_waited_title,
+              (unsigned long long)(g_startup_waited_us / 1000000ull));
   if (restarted_previous_instance)
     log_debug("[RESTART] Previous instance stopped, continuing startup");
   const runtime_config_t startup_cfg = runtime_config();
@@ -718,7 +1003,18 @@ shutdown:
   // Diagnostics reads mdbg and app.db and logs: stop it before those go.
   sm_diag_stop();
   sm_mdbg_shutdown();
-  bool title_mounts_released = shutdown_title_mounts();
+  // A game still alive here (forced or immediate stop) keeps its sandbox
+  // layers and its /system_ex/app/<TID> stack; see sm_shutdown_keeps_game_layers.
+  char kept_titles[4][MAX_TITLE_ID];
+  size_t kept_count = 0;
+  char kept_title[MAX_TITLE_ID];
+  if (sm_game_lifecycle_shutdown_live_title(kept_title))
+    (void)sm_title_list_add(kept_titles, &kept_count, 4, kept_title);
+  if (sm_fakelib_game_kept_title(kept_title))
+    (void)sm_title_list_add(kept_titles, &kept_count, 4, kept_title);
+  sm_pkg_backport_add_kept_titles(kept_titles, &kept_count, 4);
+  bool title_mounts_released = shutdown_title_mounts(
+      (const char (*)[MAX_TITLE_ID])kept_titles, kept_count);
   bool image_mounts_released = false;
   if (title_mounts_released) {
     image_mounts_released = shutdown_image_mounts();
@@ -736,8 +1032,10 @@ shutdown:
   shutdown_app_db();
   sm_ownership_end();
 
-  if (atomic_load_explicit(&g_shutdown_on_going_stop_requested,
-                           memory_order_acquire)) {
+  if (atomic_load_explicit(&g_stop_latched, memory_order_acquire)) {
+    log_debug("[SHUTDOWN] cleanup complete for %s", g_stop_latched_reason);
+  } else if (atomic_load_explicit(&g_shutdown_on_going_stop_requested,
+                                  memory_order_acquire)) {
     const char *shutdown_reason =
         (const char *)atomic_load_explicit(&g_shutdown_stop_reason_bits,
                                            memory_order_acquire);

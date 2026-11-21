@@ -2763,10 +2763,51 @@ void sm_fakelib_game_on_exit(pid_t pid) {
   pthread_mutex_unlock(&g_fakelib_mutex);
 }
 
-void sm_fakelib_game_shutdown(void) {
+static char g_fakelib_kept_title_id[MAX_TITLE_ID];
+
+void sm_fakelib_game_shutdown(const char *handoff_title_id) {
   pthread_mutex_lock(&g_fakelib_mutex);
-  (void)cleanup_fakelib_mount();
+  g_fakelib_kept_title_id[0] = '\0';
+  pid_t pid = g_fakelib_mount.pid;
+  sm_layer_owner_facts_t facts = {
+      .has_layers = fakelib_session_active(),
+      .pid = pid,
+      .pid_alive = pid > 0 && (kill(pid, 0) == 0 || errno != ESRCH),
+      .handoff_pending = handoff_title_id &&
+          strcmp(handoff_title_id, g_fakelib_mount.title_id) == 0,
+  };
+  if (facts.has_layers && !facts.pid_alive)
+    facts.sandbox_exists =
+        sm_shellcore_service_title_sandbox_exists(g_fakelib_mount.title_id);
+  if (sm_shutdown_keeps_game_layers(&facts)) {
+    (void)strlcpy(g_fakelib_kept_title_id, g_fakelib_mount.title_id,
+                  sizeof(g_fakelib_kept_title_id));
+    for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+      const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+      if (!layer->source_path[0] || !layer->owned_mount)
+        continue;
+      log_debug("  [FAKELIB] shutdown kept %s layer of live game %s pid=%ld: "
+                "%s -> %s",
+                layer->label ? layer->label : "?", g_fakelib_mount.title_id,
+                (long)pid, layer->source_path, layer->mount_path);
+    }
+  } else if (!cleanup_fakelib_mount()) {
+    int cleanup_errno = errno != 0 ? errno : EIO;
+    for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+      const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+      log_debug("  [FAKELIB] shutdown retained %s layer of %s: %s -> %s (%s)",
+                layer->label ? layer->label : "?", g_fakelib_mount.title_id,
+                layer->source_path, layer->mount_path, strerror(cleanup_errno));
+    }
+  }
   g_fakelib_mount.cleanup_next_us = 0;
   g_fakelib_mount.cleanup_deadline_us = 0;
   pthread_mutex_unlock(&g_fakelib_mutex);
+}
+
+bool sm_fakelib_game_kept_title(char title_id[MAX_TITLE_ID]) {
+  pthread_mutex_lock(&g_fakelib_mutex);
+  (void)strlcpy(title_id, g_fakelib_kept_title_id, MAX_TITLE_ID);
+  pthread_mutex_unlock(&g_fakelib_mutex);
+  return title_id[0] != '\0';
 }

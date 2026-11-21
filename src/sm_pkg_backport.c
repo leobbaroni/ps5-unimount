@@ -12,6 +12,7 @@
 #include "sm_scan.h"
 #include "sm_runtime.h"
 #include "sm_time.h"
+#include "sm_unimount_logic.h"
 
 #define NSFS_CONTROL_DEVICE "/dev/nsfsctl"
 #define NSFS_IOCTL_CREATE_REDIRECT 0xC0406E00UL
@@ -53,6 +54,8 @@ typedef struct {
 typedef struct {
   bool installed;
   bool ready;
+  // Kept for a live game by a shutdown; later shutdown calls leave it.
+  bool shutdown_kept;
   pid_t pid;
   uint64_t cleanup_next_us;
   uint64_t cleanup_deadline_us;
@@ -749,15 +752,51 @@ void sm_pkg_backport_on_exit(pid_t pid) {
   pthread_mutex_unlock(&g_pkg_backport_mutex);
 }
 
-void sm_pkg_backport_shutdown(void) {
+void sm_pkg_backport_shutdown(const char *handoff_title_id) {
   pthread_mutex_lock(&g_pkg_backport_mutex);
   for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
     pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    if (session->installed && !session->shutdown_kept) {
+      sm_layer_owner_facts_t facts = {
+          .has_layers = true,
+          .pid = session->pid,
+          .pid_alive = session->pid > 0 &&
+              (kill(session->pid, 0) == 0 || errno != ESRCH),
+          .handoff_pending = handoff_title_id &&
+              strcmp(handoff_title_id, session->title_id) == 0,
+      };
+      // An unreadable namespace state counts as still present.
+      if (!facts.pid_alive)
+        facts.sandbox_exists = session_namespace_status(session) <= 0;
+      if (sm_shutdown_keeps_game_layers(&facts)) {
+        session->shutdown_kept = true;
+        log_debug("  [BKP][NSFS] shutdown kept redirects of live game: "
+                  "title=%s pid=%ld count=%zu",
+                  session->title_id, (long)session->pid,
+                  session->redirect_count);
+      }
+    }
+    if (session->shutdown_kept) {
+      session->cleanup_next_us = 0;
+      session->cleanup_deadline_us = 0;
+      continue;
+    }
     if (!cleanup_session_locked(session, "shutdown"))
       log_debug("  [BKP][NSFS] shutdown retained redirects: title=%s error=%d",
                 session->title_id, errno);
     session->cleanup_next_us = 0;
     session->cleanup_deadline_us = 0;
+  }
+  pthread_mutex_unlock(&g_pkg_backport_mutex);
+}
+
+void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
+                                     size_t *count, size_t max) {
+  pthread_mutex_lock(&g_pkg_backport_mutex);
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
+    const pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
+    if (session->installed && session->shutdown_kept)
+      (void)sm_title_list_add(titles, count, max, session->title_id);
   }
   pthread_mutex_unlock(&g_pkg_backport_mutex);
 }

@@ -425,7 +425,102 @@ static void test_ampr(void) {
          unlink(split_path) == 0 && rmdir(directory) == 0);
 }
 
+static void test_startup_wait(void) {
+  for (int predecessor = 0; predecessor < 2; ++predecessor) {
+    sm_startup_facts_t f = {.predecessor = predecessor != 0};
+    // No application: start (and replace the predecessor) at once.
+    assert(sm_startup_decide(&f) == SM_STARTUP_PROCEED);
+    // Unmanaged app (retail game, system app): no delay.
+    f.app_running = true;
+    f.title_known = true;
+    assert(sm_startup_decide(&f) == SM_STARTUP_PROCEED);
+    // Managed title: stay passive until it is closed.
+    f.managed = true;
+    assert(sm_startup_decide(&f) == SM_STARTUP_WAIT);
+    // Unknown title: it may be ours.
+    f.title_known = false;
+    f.managed = false;
+    assert(sm_startup_decide(&f) == SM_STARTUP_WAIT);
+    // Stale facts of a closed app do not matter.
+    f.app_running = false;
+    f.managed = true;
+    assert(sm_startup_decide(&f) == SM_STARTUP_PROCEED);
+  }
+  assert(sm_startup_decide(NULL) == SM_STARTUP_PROCEED);
+
+  // Predecessor still alive after the takeover timeout: never run alongside.
+  assert(sm_restart_timeout_decide(true) == SM_RESTART_WAIT_FOR_APP);
+  assert(sm_restart_timeout_decide(false) == SM_RESTART_GIVE_UP);
+}
+
+static void test_stop_decide(void) {
+  // No request.
+  assert(sm_stop_decide(0, false, false) == SM_STOP_NONE);
+  assert(sm_stop_decide(0, false, true) == SM_STOP_NONE);
+  // First request without a game: stop now; with a game: defer.
+  assert(sm_stop_decide(1, false, false) == SM_STOP_NOW);
+  assert(sm_stop_decide(1, false, true) == SM_STOP_DEFER);
+  // Second request while deferred forces the stop.
+  assert(sm_stop_decide(2, false, true) == SM_STOP_NOW);
+  assert(sm_stop_decide(7, false, true) == SM_STOP_NOW);
+  // Console shutdown / internal failure cannot wait.
+  assert(sm_stop_decide(0, true, true) == SM_STOP_NOW);
+  assert(sm_stop_decide(1, true, true) == SM_STOP_NOW);
+}
+
+static void test_kept_layers(void) {
+  sm_layer_owner_facts_t f = {0};
+  // Nothing recorded: nothing to keep.
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  assert(!sm_shutdown_keeps_game_layers(NULL));
+  f.has_layers = true;
+  // Pre-spawn session (sandbox ready, no process yet).
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  f.sandbox_exists = true;
+  assert(sm_shutdown_keeps_game_layers(&f));
+  // Live process.
+  f.pid = 298;
+  f.pid_alive = true;
+  f.sandbox_exists = false;
+  assert(sm_shutdown_keeps_game_layers(&f));
+  // Exited process, no handoff: normal teardown, even with a lingering sandbox.
+  f.pid_alive = false;
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  f.sandbox_exists = true;
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  // Exited process during a same-app handoff in that sandbox: keep.
+  f.handoff_pending = true;
+  assert(sm_shutdown_keeps_game_layers(&f));
+  f.sandbox_exists = false;
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  f.has_layers = false;
+  f.pid_alive = true;
+  assert(!sm_shutdown_keeps_game_layers(&f));
+
+  // /system_ex/app/<TID> stacks kept for the live titles only.
+  char kept[3][MAX_TITLE_ID];
+  size_t count = 0;
+  assert(!sm_title_list_contains((const char (*)[MAX_TITLE_ID])kept, count,
+                                 "PPSA01234"));
+  assert(sm_title_list_add(kept, &count, 3, "PPSA01234"));
+  assert(sm_title_list_add(kept, &count, 3, "PPSA01234") && count == 1);
+  assert(!sm_title_list_add(kept, &count, 3, "") && count == 1);
+  assert(!sm_title_list_add(kept, &count, 3, "ppsa01234") && count == 1);
+  assert(!sm_title_list_add(kept, &count, 3, NULL) && count == 1);
+  assert(sm_title_list_add(kept, &count, 3, "CUSA00001") && count == 2);
+  assert(sm_title_list_add(kept, &count, 3, "PPSA99999") && count == 3);
+  assert(!sm_title_list_add(kept, &count, 3, "PPSA11111") && count == 3);
+  const char (*view)[MAX_TITLE_ID] = (const char (*)[MAX_TITLE_ID])kept;
+  assert(sm_title_list_contains(view, count, "PPSA01234"));
+  assert(sm_title_list_contains(view, count, "CUSA00001"));
+  assert(!sm_title_list_contains(view, count, "PPSA11111"));
+  assert(!sm_title_list_contains(view, count, NULL));
+}
+
 int main(void) {
+  test_startup_wait();
+  test_stop_decide();
+  test_kept_layers();
   test_classify_state();
   test_quit_and_http();
   test_legacy_mounts();
@@ -436,7 +531,7 @@ int main(void) {
   test_failures();
   test_auto_decide();
   test_ampr();
-  puts("unimount logic: takeover, adoption, ledger, compat listener, auto-mount "
-       "and AMPR selection passed");
+  puts("unimount logic: startup wait, stop deferral, kept layers, takeover, "
+       "adoption, ledger, compat listener, auto-mount and AMPR selection passed");
   return 0;
 }
