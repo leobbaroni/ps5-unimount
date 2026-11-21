@@ -26,6 +26,10 @@ version = 2
 # 127.0.0.1 restricts access to the console; default allows LAN access.
 # bind_address = 0.0.0.0
 # port = 10101
+# Allow /api/v1/games/launch and /api/v1/games/close to start and close games.
+# The API has no authentication: anyone who can reach the port can use them.
+# /api/v1/games/running stays available when off.
+# allow_launch = on
 
 [scan]
 # Depth 1: first-level subfolders; 2: one extra nested level.

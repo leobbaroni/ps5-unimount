@@ -1261,6 +1261,11 @@ bool sm_game_lifecycle_has_active_game(void) {
          atomic_load(&g_game_exit_handoff_pending);
 }
 
+int32_t sm_game_lifecycle_active_pid(void) {
+  pid_t pid = atomic_load(&g_active_game_pid);
+  return pid > 0 ? (int32_t)pid : 0;
+}
+
 bool sm_game_lifecycle_background_title(char title_id[MAX_TITLE_ID]) {
   uint64_t state = atomic_load(&g_background_game_state);
   bool allowed = state != GAME_BACKGROUND_BLOCKED &&

@@ -25,5 +25,7 @@ void sm_game_lifecycle_note_app_focus(uint32_t app_id);
 void sm_game_lifecycle_invalidate_app_focus(void);
 // Ensure the shared watcher is running for runtime game-state tracking.
 bool refresh_game_lifecycle_watcher(void);
+// UniMount: pid of the tracked live game process, or 0 when none.
+int32_t sm_game_lifecycle_active_pid(void);
 
 #endif

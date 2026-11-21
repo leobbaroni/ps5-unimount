@@ -70,6 +70,10 @@ device.
 | `/api/v1/games/fakelib` | `{"title_id":"PPSA12345","mode":"emulators"}` | Persist the PS5 game's fakelib policy for its next launch |
 | `/api/v1/games/fakelib` | `{"title_id":"PPSA12345","ignore_global_fakelib":true}` | Ignore the global fakelib overlay for this PS5 game on its next launch |
 | `/api/v1/games/icon?title_id=PPSA12345[&size=thumb\|card\|cover]` | GET | Stream the original PNG or a cached icon variant |
+| `/api/v1/games/art?title_id=PPSA12345[&size=tv\|card]` | GET | Cached JPEG of the game's 16:9 key art (`pic1.png`/`pic0.png`); see [Key art](#key-art) |
+| `/api/v1/games/launch` | `{"title_id":"PPSA12345","replace":false}` | Ask the system to start a title; see [Launch and close](#launch-and-close) |
+| `/api/v1/games/close` | `{}` or `{"title_id":"PPSA12345"}` | Close the running application (optionally only when it is that title) |
+| `/api/v1/games/running` | `{}` | Running application: app id, confirmed title and pid |
 | `/api/v1/games/mount` | `{"title_id":"PPSA12345","mode":"ro"}` | Mount a managed game, optionally overriding its image mode with `ro`/`rw` |
 | `/api/v1/games/unmount` | `{"title_id":"PPSA12345"}` | Unmount a managed game |
 | `/api/v1/games/uninstall` | `{"title_id":"PPSA12345"}` | Request game uninstallation |
@@ -197,7 +201,7 @@ A successful version response has this shape:
   "unimount_version": "0.1.0",
   "kraken_mount_version": "0.3.0",
   "kraken_mount_revision": "e1e7845",
-  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan", "ownership"]
+  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan", "ownership", "game_art", "launch_game", "close_game"]
 }
 ```
 
@@ -310,6 +314,10 @@ PNG capped at 128 pixels. `size=card` and `size=cover` are capped at 256 and 512
 pixels and may return JPEG or PNG, as indicated by `Content-Type`. Aspect ratio
 is preserved and small sources are never enlarged. If a variant is unavailable,
 the original PNG is returned. Icon URLs are versioned when the source changes.
+
+Game items also contain `art_url` when the title has key art (see
+[Key art](#key-art)); the field is omitted otherwise. Deciding this only
+`stat`s candidate files; listing never decodes images.
 
 `version` is an empty string when unavailable.
 
@@ -881,3 +889,122 @@ error has `file`, `file_mtime`, `file_mtime_unix`, `parsed`, and when parsed
 (for example `-2136342502` is `0x80AA001A`), `message`, `title_id`,
 `display_version`, `tick`, `app_id` and `category` (`null` for undocumented
 codes). Unreadable or garbled files are listed with `parsed=false`.
+
+## Key art
+
+`GET /api/v1/games/art?title_id=PPSA12345&size=tv|card` (capability
+`game_art`) returns a JPEG of the game's 16:9 key art. `size` defaults to `tv`.
+The title ID is validated exactly as for `/games/icon`; nothing is served for
+an invalid ID (HTTP 400).
+
+The source is the first of these files that exists and decodes as PNG:
+`/user/appmeta/<ID>/pic1.png`, `/user/appmeta/<ID>/pic0.png`, then `pic1.png`
+and `pic0.png` in the title's own `sce_sys` (the library runtime path, then
+`/user/app/<ID>/sce_sys` on internal and extended storage). When none is
+usable the API answers HTTP 404 with `error_reason: "art_unavailable"`; clients
+should fall back to the icon.
+
+| `size` | Output |
+| --- | --- |
+| `tv` | At most 1920x1080 |
+| `card` | At most 640x360 |
+
+Aspect ratio is preserved and sources are never enlarged. Output is baseline
+JPEG (quality 82, 4:2:0); transparent pixels are composited on black.
+Variants are cached in `/data/shadowmount/art-cache` as
+`<ID>-a<version>-<size>-<fingerprint>.jpg`, where the fingerprint covers the
+source path, device, inode, size and modification time. The first request for
+a source decodes it once and writes both variants; later requests stream the
+cached file. Old variants of the same title are removed after five minutes,
+as for icons. Responses carry `Cache-Control: public, max-age=86400, immutable`
+(the same headers as icons); use the versioned `art_url`, which changes with
+the source, rather than conditional requests.
+
+Sources larger than 64 MiB, wider or taller than 8192 pixels, or above 64
+megapixels are rejected and the next candidate is tried. A 3840x2160 source
+needs about 31 MB while it is converted. Only one conversion runs at a time;
+while it runs, one more request may wait for it and any further cold request
+returns HTTP 409 with `error_reason: "art_busy"` (retry shortly). Cached
+variants are never delayed by a conversion. During shutdown or rest mode the
+answer is HTTP 409 `stopping`.
+
+`POST /api/v1/games` and `/games/info` items carry `art_url`, for example
+`/api/v1/games/art?title_id=PPSA12345&v=1-1122334455667788`, when a source
+file exists (append `&size=card` for the card variant). Without one the field
+is omitted.
+
+## Launch and close
+
+These routes ask the system to start or close a title, as a launch from the
+home screen would (capabilities `launch_game` and `close_game`). The launch
+goes through ShellCore, so UniMount's launch hook, mount-on-launch and
+[launch diagnostics](#launch-diagnostics) run exactly as for a launch from the
+home screen; the route does not mount anything itself.
+
+**The API has no authentication.** Anyone who can reach the port can start and
+close games. Set `[api] allow_launch = off` in `config.ini` to disable launch
+and close (default `on`); `/games/running` stays available. The setting is
+applied on config reload.
+
+`POST /api/v1/games/launch` takes `{"title_id":"PPSA12345"}` and the optional
+boolean `replace`. It uses the foreground user
+(`sceUserServiceGetForegroundUser`) and `sceSystemServiceLaunchApp` with no
+arguments. When another application is running
+(`sceSystemServiceGetAppIdOfRunningBigApp() > 0`), the request is refused with
+`app_running` unless `"replace": true`; then the running application is closed
+with `sceSystemServiceKillApp(app_id, -1, 0, 0)` and the route waits up to 10
+seconds, polling every 200 ms, until no application is reported before
+launching. Success:
+
+```json
+{"status": 0, "title_id": "PPSA12345", "app_id": 1610612754, "app_id_hex": "0x60000012", "replaced": false}
+```
+
+`POST /api/v1/games/close` takes `{}` (close whatever application is running)
+or `{"title_id":"PPSA12345"}` (close it only if it is that title). The title of
+the running application is confirmed only when the game process tracked by
+UniMount's lifecycle watcher has the same app id as the running application;
+otherwise a request with `title_id` is refused with `running_title_unknown`
+rather than guessed. Closing is asynchronous: the response means the system
+accepted the request; poll `/games/running` to see it finish.
+
+```json
+{"status": 0, "closed": true, "app_id": 1610612754, "app_id_hex": "0x60000012", "title_id": "PPSA12345"}
+```
+
+`POST /api/v1/games/running` takes `{}` and returns:
+
+```json
+{"status": 0, "running": true, "app_id": 1610612754, "app_id_hex": "0x60000012", "title_id": "PPSA12345", "pid": 123}
+```
+
+`app_id` is the raw signed value (-1, `0xFFFFFFFF`, when nothing runs).
+`title_id` and `pid` are `null` when no application runs or its title cannot
+be confirmed (for example a system application or untracked homebrew).
+
+Refusals have no side effects and use the error envelope with `error_reason`:
+
+| `error_reason` | HTTP | `status` | Meaning |
+| --- | --- | --- | --- |
+| `invalid_title_id` | 400 | `EINVAL` | `title_id` is missing or invalid |
+| `launch_disabled` | 403 | `EPERM` | `[api] allow_launch = off` |
+| `unknown_title` | 404 | `ENOENT` | Title is neither in the library nor registered in app.db |
+| `stopping` | 409 | `ECANCELED` | UniMount is stopping |
+| `rest_mode` | 409 | `EBUSY` | The console is entering or in rest mode |
+| `app_running` | 409 | `EBUSY` | Another application runs and `replace` is not `true` |
+| `no_app_running` | 409 | `EBUSY` | Close: nothing is running |
+| `title_mismatch` | 409 | `EBUSY` | Close: a different title is running |
+| `running_title_unknown` | 409 | `EBUSY` | Close: the running title cannot be confirmed |
+| `close_timeout` | 409 | `ETIMEDOUT` | Launch with `replace`: the old application was still running after 10 s |
+
+System failures add the native SCE code, signed and as hex:
+
+```json
+{"status": 5, "error": "the system refused to launch the title", "error_reason": "launch_failed", "native_code": -2137784309, "native_code_hex": "0x8094000B"}
+```
+
+`error_reason` is `launch_failed` (`sceSystemServiceLaunchApp` returned a
+negative value), `close_failed` (`sceSystemServiceKillApp` returned non-zero)
+or `no_foreground_user` (`sceUserServiceGetForegroundUser` failed); these use
+HTTP 500 and `status` `EIO`. Every call is logged in `debug.log` with the
+`[API] HTTP launch game` / `[API] HTTP close game` prefix.
