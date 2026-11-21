@@ -55,7 +55,18 @@ typedef enum {
   SM_DIAG_OUTCOME_EXITED_EARLY,
   SM_DIAG_OUTCOME_CRASHED,
   SM_DIAG_OUTCOME_LAUNCH_NOT_OBSERVED,
+  // UniMount stopped/restarted (or lost the process) before the launch
+  // reached a verdict; the unobserved stages are not_observed.
+  SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED,
 } sm_diag_outcome_t;
+
+// Liveness of a recorded game PID, as probed by the daemon.
+typedef enum {
+  SM_DIAG_PROC_GONE = 0,    // No such process.
+  SM_DIAG_PROC_OTHER,       // PID exists but is another application (reused).
+  SM_DIAG_PROC_SAME,        // Same title and app id as recorded.
+  SM_DIAG_PROC_UNVERIFIED,  // Same title; app id unknown so not provable.
+} sm_diag_process_state_t;
 
 // Finding kinds reported by sm_mdbg (see sm_mdbg.c handle_game_failure()).
 typedef enum {
@@ -184,6 +195,9 @@ typedef struct {
   // Runtime-only observation state (not persisted).
   bool restored; // Loaded from launches.json; never re-evaluated.
   bool klog_final_scan_done;
+  uint64_t last_alive_mono_us;   // Last positive liveness probe of pid.
+  uint64_t next_liveness_mono_us;
+  unsigned gone_probes;
   uint64_t error_window_end_mono_us;
   uint64_t klog_scan_due_mono_us;
   char klog_anchor[SM_DIAG_KLOG_ANCHOR_SIZE];
@@ -196,6 +210,9 @@ typedef struct {
   uint32_t spawn_timeout_seconds;
   uint32_t launch_retry_grace_seconds;
   uint32_t launch_retry_window_seconds;
+  // Confirm running only after a positive liveness probe at or after the
+  // confirmation time (the daemon probes; host tests may leave it off).
+  bool require_alive_probe;
 } sm_diag_policy_t;
 
 #define SM_DIAG_DEFAULT_RUNNING_CONFIRM_SECONDS 20u
@@ -203,6 +220,10 @@ typedef struct {
 #define SM_DIAG_SPAWN_TIMEOUT_SECONDS 30u
 #define SM_DIAG_LAUNCH_RETRY_GRACE_SECONDS 10u
 #define SM_DIAG_LAUNCH_RETRY_WINDOW_SECONDS 60u
+// NOTE_EXIT seen but no final exit: finalise after this long once the PID is gone.
+#define SM_DIAG_EXIT_FINAL_GRACE_SECONDS 60u
+// Consecutive "gone" probes before a missed exit is concluded.
+#define SM_DIAG_GONE_PROBES 2u
 
 typedef enum {
   SM_DIAG_EV_LAUNCH = 1,
@@ -266,6 +287,32 @@ bool sm_diag_record_evaluate(sm_diag_record_t *rec,
 // (pending stages or a live process).
 bool sm_diag_record_is_active(const sm_diag_record_t *rec);
 bool sm_diag_outcome_is_failure(sm_diag_outcome_t outcome);
+// True for a launch without a verdict yet (in progress, running, or a
+// process whose exit was not reported), whatever its restored/interrupted flags.
+bool sm_diag_record_unfinished(const sm_diag_record_t *rec);
+// Finalise an unfinished launch whose remaining stages cannot be observed:
+// pending/unreached stages become not_observed with reason, the record is
+// marked interrupted and, unless a verdict was already observed (crashed),
+// its outcome becomes observation_interrupted.
+void sm_diag_record_interrupt(sm_diag_record_t *rec, int64_t now_ms,
+                              const char *reason);
+// Resolve a record restored from launches.json. state is the probe of its PID
+// (ignored when there is none). SAME re-attaches it to this run (monotonic
+// times rebased from the wall clock) and returns true; anything else
+// finalises it with sm_diag_record_interrupt() and returns false.
+bool sm_diag_record_resolve_restored(sm_diag_record_t *rec,
+                                     sm_diag_process_state_t state,
+                                     int64_t now_ms, uint64_t now_mono_us);
+// True when the record's PID should be probed now (process started, exit not
+// final, probe due).
+bool sm_diag_record_liveness_due(const sm_diag_record_t *rec,
+                                 uint64_t now_mono_us);
+// Apply one liveness probe (bounded reconciliation of missed exits). Returns
+// true when the record changed.
+bool sm_diag_record_note_liveness(sm_diag_record_t *rec,
+                                  const sm_diag_policy_t *policy,
+                                  sm_diag_process_state_t state, int64_t now_ms,
+                                  uint64_t now_mono_us);
 
 // --- Store ---
 bool sm_diag_store_init(sm_diag_store_t *store);
@@ -384,8 +431,8 @@ bool sm_diag_ampr_version(const unsigned char *data, size_t size,
 void sm_diag_format_time(int64_t at_ms, char out[32]);
 struct json_object *sm_diag_record_to_json(const sm_diag_record_t *rec);
 struct json_object *sm_diag_record_summary_json(const sm_diag_record_t *rec);
-// Restore a persisted record. Records that were still active are marked
-// interrupted, since this run cannot observe what happened to them.
+// Restore a persisted record as stored (restored=true). Unfinished records
+// must then go through sm_diag_record_resolve_restored().
 bool sm_diag_record_from_json(struct json_object *object,
                               sm_diag_record_t *rec);
 

@@ -309,8 +309,10 @@ static void test_json_round_trip(void) {
   json = sm_diag_record_to_json(live);
   assert(sm_diag_record_from_json(json, &restored));
   json_object_put(json);
-  // This run cannot know whether the process is still alive.
-  assert(restored.interrupted && restored.outcome == SM_DIAG_OUTCOME_RUNNING);
+  // Restored as stored; the daemon resolves it with a PID probe.
+  assert(restored.restored && !restored.interrupted &&
+         restored.outcome == SM_DIAG_OUTCOME_RUNNING);
+  assert(sm_diag_record_unfinished(&restored));
   assert(!sm_diag_record_evaluate(&restored, policy(), k_wall0, k_mono0));
 
   struct json_object *summary = sm_diag_record_summary_json(done);
@@ -319,6 +321,220 @@ static void test_json_round_trip(void) {
          !strcmp(json_object_get_string(value), "exited_early"));
   assert(json_object_object_get_ex(summary, "short_error", &value) && value == NULL);
   json_object_put(summary);
+  sm_diag_store_free(&store);
+}
+
+// --- Restart and missed-exit reconciliation ---
+
+static const sm_diag_policy_t *probe_policy(void) {
+  static sm_diag_policy_t value;
+  value = sm_diag_default_policy();
+  value.require_alive_probe = true;
+  return &value;
+}
+
+// The hardware case: launched, process started, UniMount replaced a few
+// seconds later. Persist and restore it as the next run would.
+static void restore_running_launch(sm_diag_record_t *out, bool with_error) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  set_registered(rec);
+  apply(&store, event(SM_DIAG_EV_SANDBOX_READY, 0.5));
+  start_process(&store, 143, 1);
+  evaluate(rec, 4);
+  if (with_error) {
+    sm_diag_native_error_t *error = &rec->native_errors[rec->native_error_count++];
+    memset(error, 0, sizeof(*error));
+    strlcpy(error->file, "0000001D.json", sizeof(error->file));
+    error->parsed = error->has_internal_code = true;
+    error->internal_code = -2137784263;
+    strlcpy(error->short_error, "CE-105779-9", sizeof(error->short_error));
+    strlcpy(error->title_id, TITLE, sizeof(error->title_id));
+    strlcpy(error->attribution, "title_id", sizeof(error->attribution));
+  }
+  assert(rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS);
+  assert(rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_PENDING);
+  struct json_object *json = sm_diag_record_to_json(rec);
+  assert(sm_diag_record_from_json(json, out));
+  json_object_put(json);
+  sm_diag_store_free(&store);
+}
+
+static void test_restore_without_process_is_interrupted(void) {
+  sm_diag_record_t rec;
+  restore_running_launch(&rec, false);
+  assert(rec.restored && sm_diag_record_unfinished(&rec));
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                          9 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED && rec.interrupted);
+  assert(!sm_diag_record_unfinished(&rec) && !sm_diag_record_is_active(&rec));
+  for (int stage = SM_DIAG_STAGE_MOUNTED; stage <= SM_DIAG_STAGE_PROCESS_STARTED; ++stage)
+    assert(rec.stages[stage].state == SM_DIAG_OK);
+  assert(rec.stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_NOT_OBSERVED);
+  assert(rec.stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_NOT_OBSERVED);
+  assert(strstr(rec.stages[SM_DIAG_STAGE_EXITED].detail, "UniMount restarted"));
+  assert(!rec.has_diagnosis); // nothing was observed that explains anything
+  struct json_object *summary = sm_diag_record_summary_json(&rec);
+  struct json_object *value = NULL;
+  assert(json_object_object_get_ex(summary, "outcome", &value) &&
+         !strcmp(json_object_get_string(value), "observation_interrupted"));
+  assert(json_object_object_get_ex(summary, "observation_interrupted", &value) &&
+         json_object_get_boolean(value));
+  json_object_put(summary);
+  // Persisted again, it stays final.
+  struct json_object *json = sm_diag_record_to_json(&rec);
+  sm_diag_record_t again;
+  assert(sm_diag_record_from_json(json, &again));
+  json_object_put(json);
+  assert(again.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED &&
+         !sm_diag_record_unfinished(&again));
+
+  // A reused PID (other application) or an unprovable identity is not the
+  // same launch.
+  restore_running_launch(&rec, false);
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_OTHER, k_wall0 + 60000,
+                                          9 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+  restore_running_launch(&rec, false);
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_UNVERIFIED,
+                                          k_wall0 + 60000, 9 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+
+  // Evidence observed before the interruption keeps its diagnosis.
+  restore_running_launch(&rec, true);
+  assert(!sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                          9 * SECOND));
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+  assert(rec.has_diagnosis && !strcmp(rec.diagnosis.category, "corrupt_data"));
+
+  // Files written by the previous build: interrupted but still in progress.
+  restore_running_launch(&rec, false);
+  rec.interrupted = true;
+  assert(sm_diag_record_unfinished(&rec));
+  (void)sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                        9 * SECOND);
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+
+  // A launch that never got a process is resolved as well.
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  sm_diag_record_t *pending = launch(&store, 0, 0);
+  struct json_object *pending_json = sm_diag_record_to_json(pending);
+  assert(sm_diag_record_from_json(pending_json, &rec));
+  json_object_put(pending_json);
+  sm_diag_store_free(&store);
+  assert(sm_diag_record_unfinished(&rec));
+  (void)sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_GONE, k_wall0 + 60000,
+                                        9 * SECOND);
+  assert(rec.outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED);
+  assert(rec.stages[SM_DIAG_STAGE_PROCESS_STARTED].state == SM_DIAG_NOT_OBSERVED);
+}
+
+static void test_restore_with_same_process_reattaches(void) {
+  sm_diag_record_t rec;
+  restore_running_launch(&rec, false);
+  // New run: its monotonic clock restarted; 10 s of wall time have passed.
+  const uint64_t mono = 100 * SECOND;
+  const int64_t wall = k_wall0 + 10000;
+  assert(sm_diag_record_resolve_restored(&rec, SM_DIAG_PROC_SAME, wall, mono));
+  assert(!rec.restored && !rec.interrupted);
+  assert(rec.outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS);
+  assert(sm_diag_record_unfinished(&rec));
+  // Process start (wall +1 s) mapped 9 s before "now" on the new clock.
+  assert(rec.process_start_mono_us == mono - 9 * SECOND);
+  // Keep observing: alive past the confirmation time -> running.
+  assert(sm_diag_record_liveness_due(&rec, mono));
+  uint64_t t = mono;
+  int64_t w = wall;
+  for (int i = 0; i < 14; ++i, t += SECOND, w += 1000)
+    (void)sm_diag_record_note_liveness(&rec, probe_policy(), SM_DIAG_PROC_SAME, w, t);
+  assert(rec.outcome == SM_DIAG_OUTCOME_RUNNING);
+  // Then it vanishes without an exit event: two gone probes.
+  t += 10 * SECOND;
+  assert(!sm_diag_record_note_liveness(&rec, probe_policy(), SM_DIAG_PROC_GONE, w, t));
+  t += 5 * SECOND;
+  assert(sm_diag_record_note_liveness(&rec, probe_policy(), SM_DIAG_PROC_GONE, w, t));
+  assert(rec.outcome == SM_DIAG_OUTCOME_EXITED_NORMALLY);
+  assert(strstr(rec.stages[SM_DIAG_STAGE_EXITED].detail, "exit not observed directly"));
+  assert(!sm_diag_record_liveness_due(&rec, t + 60 * SECOND));
+}
+
+static void test_missed_exit_reconciliation(void) {
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  // Without a positive probe the daemon policy never confirms running.
+  sm_diag_record_t *rec = launch(&store, 0, 0);
+  start_process(&store, 200, 1);
+  (void)sm_diag_record_evaluate(rec, probe_policy(), k_wall0 + 30000,
+                                k_mono0 + 30 * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS);
+
+  // Dies after 6 s, exit missed: exited_early.
+  rec = launch(&store, 0, 100);
+  start_process(&store, 201, 101);
+  for (int s = 102; s <= 106; ++s)
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  assert(!sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                       k_wall0 + 107000, k_mono0 + 107 * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS); // one probe is not enough
+  assert(sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                      k_wall0 + 108000, k_mono0 + 108 * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_EXITED_EARLY);
+  assert(rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_FAILED);
+  assert(strstr(rec->stages[SM_DIAG_STAGE_EXITED].detail, "exit not observed directly"));
+
+  // A reused PID counts as gone.
+  rec = launch(&store, 0, 200);
+  start_process(&store, 202, 201);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_OTHER,
+                                     k_wall0 + 202000, k_mono0 + 202 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_OTHER,
+                                     k_wall0 + 203000, k_mono0 + 203 * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_EXITED_EARLY);
+
+  // Gone after the confirmation time without a probe proving it lived that
+  // long (probes were missed): honest answer is observation_interrupted.
+  rec = launch(&store, 0, 300);
+  start_process(&store, 203, 301);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                     k_wall0 + 303000, k_mono0 + 303 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 340000, k_mono0 + 340 * SECOND);
+  (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                     k_wall0 + 341000, k_mono0 + 341 * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_OBSERVATION_INTERRUPTED && rec->interrupted);
+  assert(rec->stages[SM_DIAG_STAGE_EXITED].state == SM_DIAG_OK);
+  assert(rec->stages[SM_DIAG_STAGE_RUNNING_CONFIRMED].state == SM_DIAG_NOT_OBSERVED);
+
+  // NOTE_EXIT seen but the final exit never reported: concluded after the
+  // grace, using the observed exit time.
+  rec = launch(&store, 0, 400);
+  start_process(&store, 204, 401);
+  for (int s = 402; s <= 425; ++s)
+    (void)sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_SAME,
+                                       k_wall0 + s * 1000, k_mono0 + (uint64_t)s * SECOND);
+  assert(rec->outcome == SM_DIAG_OUTCOME_RUNNING);
+  pid_event(&store, SM_DIAG_EV_PROCESS_EXIT, 204, 430);
+  for (int s = 431; s < 490; s += 5) {
+    rec->next_liveness_mono_us = 0;
+    assert(!sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                         k_wall0 + s * 1000,
+                                         k_mono0 + (uint64_t)s * SECOND));
+  }
+  rec->next_liveness_mono_us = 0;
+  assert(sm_diag_record_note_liveness(rec, probe_policy(), SM_DIAG_PROC_GONE,
+                                      k_wall0 + 491000, k_mono0 + 491 * SECOND));
+  assert(rec->outcome == SM_DIAG_OUTCOME_EXITED_NORMALLY);
+  assert(rec->exit_mono_us == k_mono0 + 430 * SECOND);
+
+  // The lifecycle watcher re-reporting a live re-attached PID does not open
+  // a second record.
+  rec = launch(&store, 0, 600);
+  start_process(&store, 205, 601);
+  size_t before = sm_diag_store_count(&store);
+  assert(start_process(&store, 205, 640) == rec && sm_diag_store_count(&store) == before);
   sm_diag_store_free(&store);
 }
 
@@ -828,6 +1044,9 @@ int main(int argc, char **argv) {
   test_process_without_launch_request();
   test_store_keeps_last_64();
   test_json_round_trip();
+  test_restore_without_process_is_interrupted();
+  test_restore_with_same_process_reattaches();
+  test_missed_exit_reconciliation();
   test_error_history_parser();
   test_classification_rules();
   test_param_firmware();

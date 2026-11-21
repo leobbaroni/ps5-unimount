@@ -79,6 +79,20 @@ in progress), `image`, `title_nullfs`, `backport_overlay`.
 | `exited_early` | The process exited before confirmation |
 | `crashed` | A fatal signal, exception report or mdbg crash flag was observed |
 | `launch_not_observed` | Record without a launch request or process (should be rare) |
+| `observation_interrupted` | UniMount restarted or stopped, or lost the process, before a verdict; the unobserved stages are `not_observed` |
+
+Running is confirmed only by observation: the diagnostics thread probes the
+recorded PID (`kill(pid, 0)` plus `sceKernelGetAppInfo()` title and app id,
+like the lifecycle watcher) about once a second until confirmation and every
+5 s afterwards, and `running_confirmed` becomes `ok` only after a positive
+probe at or after `running_confirm_seconds`. The same probes bound missed
+exits: when the PID is gone (or now belongs to another application) on two
+consecutive probes without an exit event, the exit is concluded with the detail
+"exit not observed directly" - `exited_normally` when running was confirmed,
+`exited_early` when the process vanished before the confirmation time, and
+`observation_interrupted` when it vanished later without a probe proving it
+lived that long. A `NOTE_EXIT` whose final exit is never reported is concluded
+60 s later with the observed exit time.
 
 A mount or registration success never makes a launch `running`: only the
 lifecycle watcher's process plus the confirmation time does. A same-app
@@ -233,9 +247,26 @@ The last 64 records are kept in memory and saved to
 `/data/shadowmount/launches.json` (unique `mkstemp` temporary file, fsync,
 rename; the file is read with `O_NOFOLLOW`) at most every 2 s while something
 changed, from the diagnostics thread, and once more at shutdown. They are restored on
-the first diagnostics use after start. A record that was still being observed
-when UniMount stopped keeps its last observed state and gets
-`observation_interrupted: true`; it is not re-evaluated and never absorbs a
+the first diagnostics use after start. No record stays "in progress" across a
+restart:
+
+- At shutdown, an unfinished launch whose process is already gone is finalised
+  as `observation_interrupted`; a game that is still running is saved in
+  progress.
+- On restore, an unfinished launch whose PID still runs the same application
+  (same title and app id; a reused PID or an unknown app id does not count) is
+  re-attached: its monotonic times are rebased from the wall clock, an
+  `observation_resumed` timeline entry is added, and it keeps being observed
+  until `running_confirmed` and `exited` are reached.
+- Any other unfinished launch becomes `observation_interrupted` with
+  `observation_interrupted: true`; its pending or unreached stages
+  (`running_confirmed`, `exited`, ...) become `not_observed` with the detail
+  "UniMount restarted before this was observed". Stages already observed keep
+  their state. A diagnosis is kept only when evidence (native error, game
+  error, kernel-log line) was attached before the interruption; an observed
+  verdict such as `crashed` is kept.
+
+Finished records are restored as they were and never re-evaluated or absorb a
 process of the current run. Monotonic timestamps (`mono_us`) only compare
 within one UniMount run.
 

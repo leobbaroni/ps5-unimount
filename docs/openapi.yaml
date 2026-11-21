@@ -3482,6 +3482,9 @@ components:
       required: [id, outcome, at, short_error, category]
       properties:
         id: {type: integer, minimum: 1}
+        observation_interrupted:
+          type: boolean
+          description: UniMount restarted, stopped or lost the process before the launch was fully observed (additive field).
         outcome:
           $ref: "#/components/schemas/LaunchOutcome"
         at: {type: [string, "null"], format: date-time}
@@ -3493,7 +3496,7 @@ components:
           description: Diagnosis category, or null when there is no diagnosis.
     LaunchOutcome:
       type: string
-      enum: [launch_in_progress, running, exited_normally, mount_failed, spawn_failed, exited_early, crashed, launch_not_observed]
+      enum: [launch_in_progress, running, exited_normally, mount_failed, spawn_failed, exited_early, crashed, launch_not_observed, observation_interrupted]
     LaunchStage:
       type: object
       required: [state, at, at_unix_ms, mono_us, detail]
@@ -3558,7 +3561,7 @@ components:
           $ref: "#/components/schemas/LaunchOutcome"
         observation_interrupted:
           type: boolean
-          description: UniMount restarted while this launch was still being observed.
+          description: UniMount restarted or stopped (or lost the process) before the launch was fully observed; the unobserved stages are not_observed.
         short_error: {type: [string, "null"]}
         launch_attempts: {type: integer, minimum: 0}
         stages:
