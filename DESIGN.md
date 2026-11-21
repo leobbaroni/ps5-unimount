@@ -22,7 +22,7 @@ typography:
     fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Noto Sans CJK JP', 'Noto Sans Thai', 'Noto Sans Arabic', sans-serif"
     fontSize: "5rem"
     fontWeight: 700
-    lineHeight: 1
+    lineHeight: 1.12
     letterSpacing: "-0.03em"
   headline:
     fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Noto Sans CJK JP', 'Noto Sans Thai', 'Noto Sans Arabic', sans-serif"
@@ -141,11 +141,16 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
     width: "15rem"
+  shelf-card-compact:
+    backgroundColor: "{colors.fill-solid}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.control}"
+    width: "13rem"
   stage-segment:
     backgroundColor: "{colors.ink}"
     textColor: "{colors.on-ink}"
     rounded: "{rounded.mark}"
-    width: "5.75rem"
+    width: "6.25rem"
     height: "1.5rem"
   stage-segment-failed:
     backgroundColor: "{colors.failure-red}"
@@ -221,13 +226,13 @@ Monochrome over photography: a near-black ground, white at a few opacities, and 
 ### Hierarchy
 All sizes are rem. The root is `max(16px, min(1.25vw, 2.222vh))`: 16px at the primary 1540×700 viewport, 24px at 1920×1080.
 
-- **Display** (700, 5rem, line-height 1, -0.03em): the focused game's title, upper left of the home screen, clamped to two lines. Longer titles step down to 4rem, 3.25rem and 2.75rem rather than truncating early.
+- **Display** (700, 5rem, line-height 1.12 with a 0.04em bottom pad so descenders clear the clamp, -0.03em): the focused game's title, upper left of the home screen, two lines at most and always shown whole. On the TV layout the size is fitted, not fixed: it starts at 5rem (4rem for titles over 16 characters) and steps down to a 2rem floor until the title shows in full and the Library fits; titles over 44 characters track at -0.02em.
 - **Headline** (700, 1.5rem, 1.3): section page titles; dialog titles run one step larger at 1.75rem. The wordmark is 1.5rem/700 at -0.01em.
 - **Title** (700, 1.375rem, 1.3): the facts line under the game title, the shelf heading, drive names.
 - **Subtitle** (700, 1.125rem, 1.3): block headings inside a page, list-row titles; shelf-cover names at 1.0625rem.
-- **Body large** (400, 1.25rem, 1.3): the state sentence and the labels of the hero action row.
+- **Body large** (400, 1.25rem, 1.3): the state sentence (two lines at most) and the labels of the hero action row.
 - **Body** (400, 1.125rem, 1.3): buttons, tabs, inputs, lead paragraphs.
-- **Label** (400, 1rem, 1.4): stage labels, status line, metadata, hints, legend, small buttons.
+- **Label** (400, 1rem, 1.4): stage labels, status line, metadata, hints, legend, small buttons. Stage notes use it at line-height 1.2.
 - **Tag** (700, 0.9375rem, tabular): error codes on covers; inline tags drop to 0.8125rem.
 - **Path** (monospace 400, 0.9375rem): filesystem paths, job routes; the log view is 0.875rem at 1.45.
 
@@ -243,14 +248,15 @@ All sizes are rem. The root is `max(16px, min(1.25vw, 2.222vh))`: 16px at the pr
 The TV layout is one fixed viewport with no page scroll: a 3.5rem top bar, a view that fills the rest, and a 2.25rem legend line. The horizontal gutter is 2.5rem everywhere.
 
 - **Top bar:** wordmark, five section tabs, a right-aligned one-line status.
-- **Home:** the hero stack sits upper left, capped near 46rem wide so the art stays visible on the right: title, facts line, stage tracker, one state sentence, action row. The shelf zone is pushed to the bottom: a heading with the position count ("All games · n of N"), filter, two selects and a rescan button on the same line, then a horizontally scrolling row of 15rem covers that bleeds through the gutter. Paging buttons overlay the row ends.
+- **Home:** the hero stack sits upper left, capped near 46rem wide so the art stays visible on the right: title, facts line, stage tracker, one state sentence, action row. The shelf zone is pushed to the bottom: a heading with the position count ("All games · n of N"), the job strip while a storage job runs, filter, two selects and a rescan button on the same line, then a horizontally scrolling row of 15rem covers that bleeds through the gutter. Paging buttons overlay the row ends. A constant 0.5rem separates the shelf from the legend.
+- **Fitting:** outside the reflow layout the Library is a fixed-height shell that never scrolls. When hero, shelf, job strip and legend do not fit, the title steps down one size at a time; at each size the covers are tried at 15rem first, then compacted to 13rem (the tracker and action row close up to 0.75rem and hero actions drop to 2.75rem). A larger title wins over full-size covers. The selected cover is kept scrolled into view.
 - **Section pages:** a 15rem column of sub-navigation buttons, then a scrolling pane capped at 72rem. Blocks are separated by a soft 1px rule, not boxed. Settings pin a save bar to the bottom edge.
 - **Dialogs:** a centred sheet (40, 56 or 72rem wide) over a 72 percent black veil, with head, scrolling body and right-aligned foot.
 - **Rhythm:** 0.375rem and 0.625rem inside components, 1rem between siblings, 1.25 to 1.5rem between blocks.
 - **Reflow:** at 900px wide or narrower, or any portrait aspect, the page scrolls; the gutter drops to 1rem; tabs become a fixed bottom bar; the art becomes a banner 60vw tall; action buttons wrap two per row at a 44px minimum height; the legend and paging buttons are removed; sub-navigation becomes a horizontal strip.
-- **Direction:** every offset has a right-to-left mirror, including the scrim's reading side.
+- **Direction:** every offset has a right-to-left mirror, including the scrim's reading side. The shelf paging buttons swap ends, so "previous" sits at the reading-direction start and "next" at its end, each chevron pointing outward.
 
-**The One Viewport Rule.** On the TV the home screen fits 1540×700 with nothing below the fold. A new element has to displace something; it cannot extend the page.
+**The One Viewport Rule.** On the TV the home screen fits 1540×700 with nothing below the fold. A new element has to displace something; it cannot extend the page. The title and covers give way first, through the fitting steps; nothing is cut off.
 
 ## Elevation & Depth
 
@@ -277,7 +283,7 @@ Controls are plain and confident: an outline, a label, an optional 1.25em stroke
 - **Default:** Glass Fill with white text. This is every button except the one primary.
 - **Primary:** solid white with black 700 text and no visible outline. One per screen or dialog; on the home screen it is the action the focused game's state calls for.
 - **Hover / Focus:** hover swaps to Focus Fill (primary to Pressed White) with no transition. Focus adds a 3px white outline offset 3px (4px on primary and on the delete confirmation) and the same Focus Fill.
-- **Sizes:** hero actions are 3rem tall at Body large with an 8.5rem minimum width; small buttons are 2.25rem at Label size; icon-only buttons keep the height and square up.
+- **Sizes:** hero actions are 3rem tall (2.75rem when the Library compacts) at Body large with an 8.5rem minimum width; small buttons are 2.25rem at Label size; icon-only buttons keep the height and square up.
 - **Disabled:** 45 percent opacity.
 - **Destructive:** an ordinary outlined button until the final step. Only the last, irreversible confirmation is filled red, and it follows a red-outlined box stating exactly what is deleted.
 
@@ -286,12 +292,14 @@ Controls are plain and confident: an outline, a label, an optional 1.25em stroke
 - **Sub-navigation:** full-width left-aligned buttons with a soft outline; the current one takes a full white outline and 700.
 
 ### Stage tracker (signature)
-Five segments in a row, each 5.75rem by 1.5rem with a 2px white outline, a label beneath and an optional second-line note. Done is solid white with a black check. Pending is a dashed outline with a white glyph. Deferred ("on launch") is outlined with a play triangle. Not reached is an empty outline. Failed is solid red with a white cross. The tracker is re-stamped (a 240ms fade up from 35 percent) whenever the focused game changes. The same segments, 3rem wide, lead each row of the per-game diagnostics list.
+Five segments in a row, each 6.25rem by 1.5rem with a 2px white outline, a label beneath (one line, ellipsis) and an optional note that wraps under it. Done is solid white with a black check. Pending is a dashed outline with a white glyph. Deferred ("on launch") is outlined with a play triangle. Not reached is an empty outline in Tertiary White. Failed is solid red with a white cross. Not observed (the last launch's observation was interrupted, its outcome is one the page does not know, or an in-progress record went stale) is the same hollow outline with the note "Not observed": never red, never a check. The tracker is re-stamped (a 240ms fade up from 35 percent) whenever the focused game changes. The same segments, 3rem wide, lead each row of the per-game diagnostics list.
 
 ### Cover shelf (signature)
 - **Cover:** 15rem wide, 16:9 art above a 4.25rem caption on Solid Fill with a 700 name (two lines maximum) and a one-line status word. Soft outline at rest. Art that does not fit 16:9 is shown whole over a darkened, enlarged copy of itself.
 - **Selected:** full white outline plus the 2px ring, scaled 1.06 from the bottom edge. Focus adds a 3px outline offset 5px.
 - **Failed:** the status word turns full white 700 with a cross, and the error code sits top-right as a red tag.
+- **Not observed:** the status word reads "Not observed" in Secondary White with no glyph and no tag; the state sentence says the launch was not observed to the end.
+- **Compact:** when the Library compacts, covers are 13rem wide with 16:9 art; the caption is unchanged.
 - **Behaviour:** moving along the shelf cross-fades the full-bleed art and re-stamps the tracker; this is the system's only motion.
 
 ### Inputs, selects and switches
@@ -307,7 +315,7 @@ Five segments in a row, each 5.75rem by 1.5rem with a 2px white outline, a label
 ### Sheets, toasts and the job strip
 - **Sheet:** opaque Sheet fill, 1px white outline, 6px corners; head and foot divided by soft rules; a square close button top-right.
 - **Toast:** bottom centre, opaque, outlined; an error toast takes a red outline and a small red square before the text.
-- **Job strip:** progress for the single storage job sits in the shelf heading line (or docks under sub-navigation), with name, meter, figures and a cancel button.
+- **Job strip:** progress for the single storage job sits in the shelf heading line (or docks under sub-navigation), with name, meter, figures and a cancel button. Its figure slot always shows a percentage, or the job's state word ("Measuring") while progress is unknown; remaining time appears only once it is known. At 1420px and narrower the meter shrinks to 3rem and the secondary figures drop; at 1300px and narrower the meter drops and the figure carries progress alone.
 
 ### Legend
 A single line at the bottom of the TV layout pairing a line icon with a word for each input the console was measured to deliver (navigate, select, close). It lists only inputs that were measured.
@@ -323,6 +331,7 @@ A single line at the bottom of the TV layout pairing a line icon with a word for
 - **Do** keep everything inline: system fonts, inline SVG line symbols, data-URI textures. The file stays self-contained and under 700 KB.
 - **Do** mirror every horizontal offset for right-to-left languages, and leave room for long translations (labels do not wrap; containers truncate with an ellipsis).
 - **Do** make reduced motion instant: no cross-fade, no scale transition, no re-stamp.
+- **Do** show a launch whose end was not observed, or whose outcome is unknown, as "Not observed": a hollow segment and a neutral word, never red and never success.
 
 ### Don't:
 - **Don't** introduce a second interface colour, a tinted surface, or red for anything other than failure and the final delete confirmation.

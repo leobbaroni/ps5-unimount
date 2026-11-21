@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-11-21T00:00:00Z",
+  "generatedAt": "2026-11-21T12:00:00Z",
   "title": "Design System: UniMount",
   "extensions": {
     "context": {
@@ -32,13 +32,13 @@
       "failure-red": { "role": "secondary", "displayName": "Failure Red", "canonical": "#c62828", "tonalRamp": ["oklch(18% 0.06 27)", "oklch(28% 0.10 27)", "oklch(38% 0.14 27)", "oklch(48% 0.18 27)", "oklch(60% 0.17 27)", "oklch(72% 0.12 27)", "oklch(84% 0.07 27)", "oklch(94% 0.03 27)"] }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "The focused game's title on the home screen; two lines maximum; steps down to 4rem, 3.25rem and 2.75rem for longer titles." },
+      "display": { "displayName": "Display", "purpose": "The focused game's title on the home screen; two lines maximum, always shown whole. Line-height 1.12 with a 0.04em bottom pad. On the TV layout the size is fitted: from 5rem (4rem over 16 characters) down to a 2rem floor until the title and the Library fit." },
       "headline": { "displayName": "Headline", "purpose": "Section page titles; dialog titles at 1.75rem; wordmark at 1.5rem with -0.01em tracking." },
       "title": { "displayName": "Title", "purpose": "Facts line, shelf heading, drive names." },
       "subtitle": { "displayName": "Subtitle", "purpose": "Block headings, list-row titles, shelf-cover names (1.0625rem)." },
-      "body-lg": { "displayName": "Body large", "purpose": "State sentence and hero action labels." },
+      "body-lg": { "displayName": "Body large", "purpose": "State sentence (two lines maximum) and hero action labels." },
       "body": { "displayName": "Body", "purpose": "Buttons, tabs, inputs, lead paragraphs." },
-      "label": { "displayName": "Label", "purpose": "Stage labels, status line, metadata, hints, legend, small buttons. The couch-distance floor." },
+      "label": { "displayName": "Label", "purpose": "Stage labels, status line, metadata, hints, legend, small buttons; stage notes at line-height 1.2, wrapping. The couch-distance floor." },
       "tag": { "displayName": "Tag", "purpose": "Error codes on covers with tabular numerals; inline tags at 0.8125rem." },
       "path": { "displayName": "Path", "purpose": "Platform monospace for filesystem paths, job routes and the log view only." }
     },
@@ -64,9 +64,15 @@
       { "name": "focus-and-crossfade", "value": "240ms", "purpose": "Art-layer opacity cross-fade, shelf-cover scale to 1.06, stage-tracker re-stamp (opacity .35 to 1). Nothing else animates; hover and switches change instantly." },
       { "name": "reduced-motion", "value": "transition: none; animation: none", "purpose": "prefers-reduced-motion makes all three instant." }
     ],
+    "libraryFit": {
+      "titleSteps": { "upTo16Characters": ["5rem", "4.5rem", "4rem", "3.5rem", "3rem", "2.5rem", "2rem"], "over16Characters": ["4rem", "3.5rem", "3rem", "2.75rem", "2.5rem", "2.25rem", "2rem"] },
+      "compact": { "coverWidth": "13rem", "coverArtHeight": "7.3125rem", "trackerAndActionsGap": "0.75rem", "heroActionHeight": "2.75rem" },
+      "purpose": "Outside the reflow layout the Library never scrolls. Each title size is tried with full-size covers, then compact covers, until nothing overflows and the title shows in full; a larger title wins over full-size covers. The shelf keeps 0.5rem above the legend."
+    },
     "breakpoints": [
       { "name": "reflow", "value": "(max-width: 900px), (max-aspect-ratio: 1/1)" },
-      { "name": "job-strip-compact", "value": "(max-width: 1420px)" }
+      { "name": "job-strip-compact", "value": "(max-width: 1420px)", "purpose": "Job-strip meter shrinks to 3rem; secondary figures drop; shelf filter narrows to 10rem." },
+      { "name": "job-strip-no-meter", "value": "(max-width: 1300px)", "purpose": "Job-strip meter drops; the percentage or state word carries progress alone." }
     ]
   },
   "components": [
@@ -106,15 +112,15 @@
       "name": "Stage Tracker",
       "kind": "custom",
       "refersTo": "stage-segment",
-      "description": "Five segments stating how far a game got: done, deferred, pending, not reached, failed. State is carried by fill, outline style and glyph together.",
-      "html": "<ol class=\"ds-tracker\"><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Found</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Prepared</span></li><li class=\"ds-stage ds-lazy\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M8 6l10 6-10 6z\"/></svg></span><span class=\"ds-stage-label\">Mounted</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Registered</span></li><li class=\"ds-stage ds-failed\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></span><span class=\"ds-stage-label\">Running</span></li></ol>",
-      "css": ".ds-tracker { display: flex; margin: 0; padding: 0; list-style: none; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-stage { width: 92px; margin-right: 6px; text-align: center; } .ds-seg { display: flex; align-items: center; justify-content: center; height: 24px; border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.45); color: #000; } .ds-seg svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; } .ds-done .ds-seg { background: #fff; } .ds-lazy .ds-seg { color: #fff; } .ds-failed .ds-seg { background: #c62828; border-color: #c62828; color: #fff; } .ds-stage-label { display: block; margin-top: 6px; color: rgba(255,255,255,.84); white-space: nowrap; } .ds-done .ds-stage-label, .ds-failed .ds-stage-label { color: #fff; }"
+      "description": "Five segments stating how far a game got: done, deferred, pending, not reached, failed, and not observed (hollow, with a 'Not observed' note; never red, never a check). State is carried by fill, outline style, glyph and note together.",
+      "html": "<ol class=\"ds-tracker\"><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Found</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Prepared</span></li><li class=\"ds-stage ds-lazy\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M8 6l10 6-10 6z\"/></svg></span><span class=\"ds-stage-label\">Mounted</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Registered</span></li><li class=\"ds-stage ds-none\"><span class=\"ds-seg\"></span><span class=\"ds-stage-label\">Running</span><span class=\"ds-stage-note\">Not observed</span></li></ol>",
+      "css": ".ds-tracker { display: flex; margin: 0; padding: 0; list-style: none; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-stage { width: 100px; margin-right: 6px; text-align: center; } .ds-seg { display: flex; align-items: center; justify-content: center; height: 24px; border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.45); color: #000; } .ds-seg svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; } .ds-done .ds-seg { background: #fff; } .ds-lazy .ds-seg { color: #fff; } .ds-failed .ds-seg { background: #c62828; border-color: #c62828; color: #fff; } .ds-stage-label { display: block; margin-top: 6px; color: rgba(255,255,255,.84); white-space: nowrap; } .ds-done .ds-stage-label, .ds-failed .ds-stage-label { color: #fff; } .ds-none .ds-seg { border-color: rgba(255,255,255,.7); } .ds-stage-note { display: block; color: #fff; line-height: 1.2; overflow-wrap: anywhere; }"
     },
     {
       "name": "Shelf Cover",
       "kind": "card",
       "refersTo": "shelf-card",
-      "description": "One game on the cover shelf: 16:9 art over a caption. The selected cover is framed, ringed and enlarged from its bottom edge.",
+      "description": "One game on the cover shelf: 16:9 art over a caption, 15rem wide (13rem when the Library compacts). The selected cover is framed, ringed and enlarged from its bottom edge. A failed cover carries a cross word and a red code tag; a not-observed cover carries a neutral word only.",
       "html": "<div class=\"ds-shelf\"><button class=\"ds-card\"><span class=\"ds-thumb\"><span class=\"ds-initials\">AB</span></span><span class=\"ds-cap\"><span class=\"ds-name\">Game title</span><span class=\"ds-word\">Ready</span></span></button><button class=\"ds-card ds-selected ds-failed\"><span class=\"ds-thumb\"><span class=\"ds-initials\">CD</span><span class=\"ds-code\">CE-000000-0</span></span><span class=\"ds-cap\"><span class=\"ds-name\">Game title</span><span class=\"ds-word\">Launch failed</span></span></button></div>",
       "css": ".ds-shelf { display: flex; padding: 16px 8px; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-card { position: relative; flex: none; display: flex; flex-direction: column; width: 240px; margin-right: 16px; padding: 0; border: 1px solid rgba(255,255,255,.34); border-radius: 6px; background: #151517; color: #fff; text-align: start; overflow: hidden; cursor: pointer; transform-origin: center bottom; transition: transform 240ms cubic-bezier(.16,1,.3,1); } .ds-thumb { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #1d1d20; } .ds-initials { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: rgba(255,255,255,.7); } .ds-cap { height: 68px; padding: 6px 14px 8px; display: flex; flex-direction: column; justify-content: center; } .ds-name { font-size: 17px; font-weight: 700; line-height: 1.3; } .ds-word { margin-top: 2px; font-size: 16px; color: rgba(255,255,255,.84); } .ds-failed .ds-word { color: #fff; font-weight: 700; } .ds-code { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 4px; background: #c62828; color: #fff; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; } .ds-card:hover { border-color: #fff; } .ds-card.ds-selected { border-color: #fff; box-shadow: 0 0 0 2px #fff; transform: scale(1.06); z-index: 2; } .ds-card:focus, .ds-card:focus-visible { outline: 3px solid #fff; outline-offset: 5px; } @media (prefers-reduced-motion: reduce) { .ds-card { transition: none; } }"
     },
@@ -160,7 +166,7 @@
       { "name": "The Two Weights Rule", "body": "Only 400 and 700. No light, medium or black, no italics, no uppercase transforms, no letter-spaced labels. Negative tracking is reserved for the display title and wordmark.", "section": "typography" },
       { "name": "The Couch Floor Rule", "body": "Anything the owner must read from the couch is 1rem or larger. Sizes below that are limited to tags, key caps and the log.", "section": "typography" },
       { "name": "The Tabular Rule", "body": "Sizes, counts, timestamps, error codes and progress figures use tabular numerals so they do not jitter as they update.", "section": "typography" },
-      { "name": "The One Viewport Rule", "body": "On the TV the home screen fits 1540×700 with nothing below the fold. A new element has to displace something; it cannot extend the page.", "section": "layout" },
+      { "name": "The One Viewport Rule", "body": "On the TV the home screen fits 1540×700 with nothing below the fold. A new element has to displace something; it cannot extend the page. The title and covers give way first, through the fitting steps; nothing is cut off.", "section": "layout" },
       { "name": "The No Blur Rule", "body": "Never rely on `backdrop-filter`, glass blur or soft shadows for legibility. If text must sit on art, the scrim or an opaque fill does the work.", "section": "elevation" },
       { "name": "The Rectangle Rule", "body": "No circles, no pills, no fully rounded ends. The largest radius in the system is 6px.", "section": "shapes" }
     ],
@@ -172,7 +178,8 @@
       "Do size in rem so the layout scales with the root, and check new work at 1540×700 first.",
       "Do keep everything inline: system fonts, inline SVG line symbols, data-URI textures. The file stays self-contained and under 700 KB.",
       "Do mirror every horizontal offset for right-to-left languages, and leave room for long translations (labels do not wrap; containers truncate with an ellipsis).",
-      "Do make reduced motion instant: no cross-fade, no scale transition, no re-stamp."
+      "Do make reduced motion instant: no cross-fade, no scale transition, no re-stamp.",
+      "Do show a launch whose end was not observed, or whose outcome is unknown, as \"Not observed\": a hollow segment and a neutral word, never red and never success."
     ],
     "donts": [
       "Don't introduce a second interface colour, a tinted surface, or red for anything other than failure and the final delete confirmation.",
