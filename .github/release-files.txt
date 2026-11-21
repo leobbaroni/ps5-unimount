@@ -10,7 +10,15 @@ mkexfat_macos.sh
 mkufs2.sh
 New-OsfExfatImage.ps1
 README.md
+THIRD_PARTY.md
+profiles.ini.example
 docs/api.md
+docs/hardware-test-log.md
+docs/releasing.md
+docs/shadowmountplus-reference.md
+docs/unimount-architecture.md
+docs/unimount-diagnostics.md
+docs/unimount-ownership.md
 docs/openapi.yaml
 tools/api_test.py
 web/index.html
