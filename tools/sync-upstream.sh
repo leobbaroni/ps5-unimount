@@ -44,6 +44,8 @@ case "$1" in
         )
         patch --batch --forward -p1 -d "$stage" < tools/kraken-index.patch
         printf '%s' "$revision" > "$stage/REVISION"
+        # Keep the release string reported by the API and the Kraken-compatible listener in step.
+        sed -i "s/#define KRAKEN_MOUNT_RELEASE \".*\"/#define KRAKEN_MOUNT_RELEASE \"${2#v}\"/" include/sm_unimount.h
 
         mv vendor/kraken "$work/previous"
         if ! mv "$stage" vendor/kraken; then

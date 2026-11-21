@@ -15,6 +15,6 @@
 
 // Kraken Mount release matching vendor/kraken/REVISION (e1e7845 = v0.3.0).
 // Reported as "version" by the Kraken-compatible /api/state.
-#define KRAKEN_MOUNT_RELEASE "0.3.0"
+#define KRAKEN_MOUNT_RELEASE "0.3.1"
 
 #endif
