@@ -16,13 +16,14 @@ A release is a git tag `v<version>`, a GitHub release carrying the ELF as `unimo
    The ELF's SHA-256 goes into `payloads.json`, so PLDMGR verifies every download against it.
 5. Commit `payloads.json` and `icons.json`.
 6. Tag `v<version>` (the tag must be `v` plus the contents of `VERSION`) and push the branch and the tag. The tag starts `.github/workflows/ps5.yml`, which builds in CI and creates a GitHub release with `UniMount_<version tag>.zip` and `unimount_v<version>.elf` attached.
-7. Make the release asset match the manifest. The CI build is a separate build and may not be byte-identical to your local one, so its checksum can differ from the one in `payloads.json`. Upload the ELF you hashed, replacing the CI asset of the same name:
+7. Make the release asset match the manifest. The CI build is a separate build and is not byte-identical to your local one, so its checksum differs from the one in `payloads.json`. Wait for the tag's workflow run to finish, then upload the ELF you hashed, replacing the CI asset of the same name. The asset takes the name of the file you upload, so copy it to the release name first:
 
    ```sh
-   gh release upload v<version> build/unimount.elf#unimount_v<version>.elf --clobber
+   cp build/unimount.elf /tmp/unimount_v<version>.elf
+   gh release upload v<version> /tmp/unimount_v<version>.elf --clobber
    ```
 
-   If the release does not exist yet, create it instead: `gh release create v<version> build/unimount.elf#unimount_v<version>.elf --title "UniMount v<version>"`.
+   Uploading before the workflow has finished does not help: the workflow replaces the asset with its own build.
 8. Check: the `url` in `payloads.json` downloads, its SHA-256 equals `checksum`, and PS5 Payload Manager (with "Multiple sources" enabled) lists the new version.
 
 The source URL users add in PLDMGR is `https://raw.githubusercontent.com/leobbaroni/ps5-unimount/main/payloads.json`, so the manifest commit has to be on `main`. Until the first release has been cut, that file does not exist in the repository.

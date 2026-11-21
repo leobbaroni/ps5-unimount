@@ -75,7 +75,9 @@ while PKG Manager was running.
 - Rest mode: the console entered rest mode after about an hour idle and came back with every
   payload, including UniMount, still running and its API answering.
 - The repository used for this test was served from a PC on the LAN. The public repository on
-  GitHub uses the same files.
+  GitHub serves the same manifest format; the v0.1.0 release asset was downloaded from GitHub and
+  its SHA-256 matched `payloads.json`. Installing from the public repository on the console has
+  not been run yet.
 
 ### E. PKG Manager — coexistence validated, installation not testable
 
@@ -146,5 +148,7 @@ progress" (the payload had been replaced seconds after that launch).
   real error-history entries (CE-107750-0, CE-105779-9, CE-105773-3, CE-108262-9), but no launch
   failed during these runs.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
+- Installing from the public GitHub repository through PS5 Payload Manager, and a cold-boot
+  autoload of UniMount (the console was not rebooted during these runs).
 - Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.
