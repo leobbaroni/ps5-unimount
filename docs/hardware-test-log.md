@@ -13,7 +13,7 @@ not observed is listed under "Not validated".
 | Loader | PS5 Payload Manager 0.6.3 → elfldr on 127.0.0.1:9021 | PLDMGR `/version`, process list |
 | Other payloads running | BFpilot 0.4.4, Orbit Store 1.9.2 | PLDMGR process list |
 | ShellCore hooks | installed, registration path `shellcore_bridge` | `GET /api/v1/system` |
-| Build under test | UniMount 0.1.0, clang 18. Tests A–F ran on commit `c65ba80` (engine with review fixes); A, G and H were repeated on the release build, commit `f1c69a3` | `POST /api/v1/version` |
+| Build under test | UniMount 0.1.0, clang 18. Tests A–F ran on commit `c65ba80` (engine with review fixes); A, G and H were repeated on commit `f1c69a3`; A, G and I ran on the released build, commit `1fd2b8f` (reported as `1.7beta12-59-g1fd2b8`) | `POST /api/v1/version` |
 | Test content | Title A, a 34.1 GB plaintext debug `.pkg`; Title B, a 9.6 GB `.exfat` image; the Orbit Store app, a 217 MB `.ffpkg` (PPSA99177); all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
 
 Launches were started and closed over the LAN, first with the test-only helper in `tools/hwtest/`
@@ -40,7 +40,8 @@ were not checked.
 3. Launch record: `outcome: running` after 20 s, every stage `ok`, `required_firmware 9.00` against
    console `13.60`; after closing, `exited_normally`, `alive_seconds 75.5`.
 4. Close: all eight sandbox layers unmounted, `runtime layers released`.
-5. Repeated on the final engine build and again after the takeover in test F: same result.
+5. Repeated on the final engine build, after the takeover in test F, and on the released build:
+   same result (`running`, then `exited_normally`; error history unchanged).
 
 ### B. Title B from an `.exfat` image (ShadowMountPlus path) — pass
 
@@ -106,6 +107,11 @@ go through the Kraken path.
   1540x700 at device pixel ratio 1, no `backdrop-filter`, no Gamepad API. D-pad arrives as arrow
   keys, cross as a pointer click, circle as Escape (after which the system closes the browser).
   Square, triangle, L1, R1 and Options were not measured.
+- Layout on the console's own browser, released build: the page was opened there and reported its
+  own geometry. For each of the three titles, including a 40-character title and with the control
+  legend showing, the document height equalled the 700 px viewport, the top bar stayed at the top
+  and nothing scrolled; no script error was raised. Nobody looked at the TV, so this is measured
+  geometry, not a visual check.
 
 ### H. Settings — pass
 
@@ -115,6 +121,19 @@ launch route answer `403 launch_disabled` at once; changing `compat_kraken_api_p
 back rebound the listener within two seconds; `diagnostics_running_confirm_seconds: 45` was
 reported by the diagnostics route; an out-of-range port and a wrong type were rejected with 400 and
 left the file unchanged. `config.ini` kept all 82 comment lines and the unrelated settings.
+
+### I. Launch records across a payload restart — pass
+
+Run on the released build after an earlier build had left one launch record permanently "in
+progress" (the payload had been replaced seconds after that launch).
+
+- On start, that stale record was resolved to `observation_interrupted`; the interface shows it as
+  "Not observed" instead of "Starting".
+- Title B was launched and the payload replaced eight seconds later, while the game kept running.
+  The new instance logged `launch 9 … re-attached after restart`, the record gained an
+  `observation_resumed` entry and reached `running`; the game's mount stayed in place (`unmount
+  deferred … Device busy`). After the game was closed the record ended `exited_normally` with
+  `exit not observed directly`, and the layers were released.
 
 ## Not validated
 
