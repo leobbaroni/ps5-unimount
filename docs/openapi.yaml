@@ -27,6 +27,7 @@ tags:
   - name: Games
   - name: Packages
   - name: Settings
+  - name: Diagnostics
 
 paths:
   /:
@@ -670,6 +671,121 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/system:
+    get:
+      operationId: getSystemReport
+      summary: Firmware, ShellCore, kstuff and mounting capabilities of this console
+      tags: [Diagnostics]
+      responses:
+        "200":
+          description: System report
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemReport"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/diagnostics/launches:
+    get:
+      operationId: listLaunches
+      summary: Observed launch records, newest first
+      tags: [Diagnostics]
+      parameters:
+        - name: title_id
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/TitleId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 64
+            default: 20
+      responses:
+        "200":
+          description: Launch records
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaunchListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/diagnostics/launches/{id}:
+    get:
+      operationId: getLaunch
+      summary: One launch record
+      tags: [Diagnostics]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Launch record
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, launch]
+                properties:
+                  status: {type: integer, const: 0}
+                  launch:
+                    $ref: "#/components/schemas/LaunchRecord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/diagnostics/errors:
+    get:
+      operationId: listNativeErrors
+      summary: The console's error history (/system_data/priv/error/history), newest first
+      tags: [Diagnostics]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        "200":
+          description: Error history
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: "#/components/headers/AllowOrigin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NativeErrorListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2428,6 +2544,11 @@ components:
           maxItems: 256
           items:
             $ref: "#/components/schemas/InstalledDlcInfo"
+        last_launch:
+          description: Newest observed launch of this title; null when no launch was observed (always present).
+          oneOf:
+            - $ref: "#/components/schemas/LaunchSummary"
+            - type: "null"
         status:
           type: integer
           const: 0
@@ -2841,3 +2962,314 @@ components:
         id: {type: integer, minimum: 0}
         offset: {type: integer, format: int64, minimum: 0}
         size: {type: integer, minimum: 0, maximum: 524288}
+    LaunchSummary:
+      type: object
+      description: Newest observed launch of a title.
+      required: [id, outcome, at, short_error, category]
+      properties:
+        id: {type: integer, minimum: 1}
+        outcome:
+          $ref: "#/components/schemas/LaunchOutcome"
+        at: {type: [string, "null"], format: date-time}
+        short_error:
+          type: [string, "null"]
+          description: Console error code such as CE-107750-0, when one was attached.
+        category:
+          type: [string, "null"]
+          description: Diagnosis category, or null when there is no diagnosis.
+    LaunchOutcome:
+      type: string
+      enum: [launch_in_progress, running, exited_normally, mount_failed, spawn_failed, exited_early, crashed, launch_not_observed]
+    LaunchStage:
+      type: object
+      required: [state, at, at_unix_ms, mono_us, detail]
+      properties:
+        state:
+          type: string
+          enum: [ok, failed, not_observed, pending]
+        at: {type: [string, "null"], format: date-time}
+        at_unix_ms: {type: [integer, "null"], format: int64}
+        mono_us: {type: [integer, "null"], format: int64}
+        detail: {type: [string, "null"]}
+    NativeError:
+      type: object
+      required: [file, file_mtime, file_mtime_unix, parsed]
+      properties:
+        file: {type: string, example: 0000001D.json}
+        file_mtime: {type: [string, "null"], format: date-time}
+        file_mtime_unix: {type: integer, format: int64}
+        parsed: {type: boolean}
+        short_error: {type: string, example: CE-107750-0}
+        internal_error_code: {type: [integer, "null"], format: int32, example: -2136342502}
+        internal_error_code_hex: {type: [string, "null"], example: "0x80AA001A"}
+        message: {type: string}
+        title_id: {type: string}
+        display_version: {type: string}
+        tick: {type: [integer, "null"], format: int64}
+        app_id: {type: [integer, "null"]}
+        category:
+          type: [string, "null"]
+          description: Documented category of internal_error_code, or null.
+        attribution:
+          type: string
+          enum: [title_id, time_window]
+          description: Only in launch records. time_window is circumstantial.
+    LaunchDiagnosis:
+      type: object
+      required: [category, confidence, rule, evidence, advice]
+      properties:
+        category:
+          type: string
+          enum: [permission, mount_busy, corrupt_data, firmware_incompatible, missing_library, fakelib_conflict, kernel_patch, mount_failed, unknown]
+        confidence:
+          type: string
+          enum: [observed, inferred]
+        rule: {type: string}
+        evidence:
+          type: array
+          items: {type: string}
+        advice: {type: string}
+    LaunchRecord:
+      type: object
+      required: [id, title_id, managed, at, at_unix_ms, mono_us, outcome, observation_interrupted, short_error, launch_attempts, stages, mount, process, environment, overlay, game_errors, kernel_log, native_errors, diagnosis, timeline]
+      properties:
+        id: {type: integer, minimum: 1}
+        title_id:
+          $ref: "#/components/schemas/TitleId"
+        managed: {type: [boolean, "null"]}
+        at: {type: [string, "null"], format: date-time}
+        at_unix_ms: {type: integer, format: int64}
+        mono_us: {type: integer, format: int64}
+        outcome:
+          $ref: "#/components/schemas/LaunchOutcome"
+        observation_interrupted:
+          type: boolean
+          description: UniMount restarted while this launch was still being observed.
+        short_error: {type: [string, "null"]}
+        launch_attempts: {type: integer, minimum: 0}
+        stages:
+          type: object
+          required: [mounted, registered, launch_requested, sandbox_ready, process_started, running_confirmed, exited]
+          properties:
+            mounted: {$ref: "#/components/schemas/LaunchStage"}
+            registered: {$ref: "#/components/schemas/LaunchStage"}
+            launch_requested: {$ref: "#/components/schemas/LaunchStage"}
+            sandbox_ready: {$ref: "#/components/schemas/LaunchStage"}
+            process_started: {$ref: "#/components/schemas/LaunchStage"}
+            running_confirmed: {$ref: "#/components/schemas/LaunchStage"}
+            exited: {$ref: "#/components/schemas/LaunchStage"}
+        mount:
+          type: [object, "null"]
+          properties:
+            status: {type: integer}
+            errno: {type: integer}
+            error: {type: [string, "null"]}
+            layer: {type: [string, "null"], example: claim}
+        process:
+          type: [object, "null"]
+          properties:
+            pid: {type: integer}
+            app_id: {type: string, example: "0x00002019"}
+            started_at: {type: [string, "null"], format: date-time}
+            exited_at: {type: [string, "null"], format: date-time}
+            alive_seconds: {type: [number, "null"]}
+        environment:
+          type: object
+          properties:
+            kstuff_loaded: {type: [boolean, "null"]}
+            shellcore_hooks_installed: {type: [boolean, "null"]}
+            console_firmware: {type: [string, "null"]}
+            console_firmware_raw: {type: [integer, "null"]}
+            required_firmware: {type: [string, "null"]}
+            required_firmware_raw: {type: [string, "null"], example: "0x1360000000000000"}
+        overlay:
+          type: object
+          properties:
+            captured: {type: boolean}
+            layers:
+              type: array
+              items:
+                type: object
+                properties:
+                  label:
+                    type: string
+                    enum: [sandbox, app0, kraken_pkg, fakelib, data, usb, ext, disc, fonts, other]
+                  fstype: {type: string}
+                  from: {type: string}
+                  "on": {type: string}
+            fakelib:
+              type: [object, "null"]
+              properties:
+                source: {type: string}
+                files:
+                  type: array
+                  items: {type: string}
+        game_errors:
+          type: array
+          items:
+            type: object
+            properties:
+              source: {type: string, const: mdbg}
+              kind:
+                type: string
+                enum: [rtld, fatal_signal, crash_flag, unknown]
+              at: {type: [string, "null"], format: date-time}
+              at_unix_ms: {type: integer, format: int64}
+              text: {type: string}
+        kernel_log:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [spawn_error, rtld, self_auth, exception, unknown]
+              attributed:
+                type: boolean
+                description: The line itself names this launch's title or PID.
+              text: {type: string}
+        native_errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/NativeError"
+        diagnosis:
+          oneOf:
+            - $ref: "#/components/schemas/LaunchDiagnosis"
+            - type: "null"
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              at: {type: [string, "null"], format: date-time}
+              at_unix_ms: {type: integer, format: int64}
+              mono_us: {type: integer, format: int64}
+              event: {type: string}
+              detail: {type: string}
+    LaunchListResponse:
+      type: object
+      required: [status, enabled, running_confirm_seconds, error_window_seconds, launches]
+      properties:
+        status: {type: integer, const: 0}
+        enabled: {type: boolean}
+        running_confirm_seconds: {type: integer}
+        error_window_seconds: {type: integer}
+        launches:
+          type: array
+          items:
+            $ref: "#/components/schemas/LaunchRecord"
+    NativeErrorListResponse:
+      type: object
+      required: [status, directory, readable, read_error, total_files, errors]
+      properties:
+        status: {type: integer, const: 0}
+        directory: {type: string, const: /system_data/priv/error/history}
+        readable: {type: boolean}
+        read_error: {type: [string, "null"]}
+        total_files: {type: integer, minimum: 0}
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/NativeError"
+    SystemMechanism:
+      type: object
+      required: [name, available, reason]
+      properties:
+        name:
+          type: string
+          enum: [lvd, md, nullfs, unionfs, pfs_images, kraken_pkg, per_title_registration]
+        available: {type: [boolean, "null"]}
+        reason: {type: [string, "null"]}
+        path: {type: string, description: per_title_registration only}
+        bridge_revision: {type: string, description: kraken_pkg only}
+        ampr_runtime:
+          type: string
+          enum: [shared, bundled]
+        ampr_runtime_path: {type: [string, "null"]}
+        ampr_runtime_version: {type: [string, "null"], example: 0.4.1}
+    SystemReport:
+      type: object
+      required: [status, firmware, shellcore, kstuff, mechanisms, limitations]
+      properties:
+        status: {type: integer, const: 0}
+        firmware:
+          type: object
+          required: [display, raw, raw_hex]
+          properties:
+            display: {type: string, example: "13.60"}
+            raw: {type: integer}
+            raw_hex: {type: string}
+        shellcore:
+          type: object
+          properties:
+            offsets_available: {type: boolean}
+            offsets_firmware: {type: [string, "null"]}
+            install_bridge_firmware: {type: boolean}
+            hooks:
+              type: object
+              properties:
+                installed: {type: [boolean, "null"]}
+                state:
+                  type: string
+                  enum: [not_installed, installed, stale, rollback_pending, busy, unknown]
+                hook_count: {type: integer}
+                install_hook: {type: boolean}
+            registration:
+              type: object
+              properties:
+                path:
+                  type: string
+                  enum: [shellcore_bridge, direct_appinstutil, batch_install_all]
+                available: {type: [boolean, "null"]}
+                reason: {type: string}
+        kstuff:
+          type: object
+          required: [loaded, implementation, version, version_source, inferred]
+          properties:
+            loaded:
+              type: boolean
+              description: Measured with KEKCALL_CHECK.
+            loaded_source: {type: string, const: KEKCALL_CHECK}
+            inferred:
+              type: boolean
+              const: true
+              description: implementation and version are inferred, not reported by kstuff.
+            implementation:
+              type: string
+              enum: [kstuff-lite, kstuff, unknown]
+            version: {type: [string, "null"]}
+            version_source:
+              type: [string, "null"]
+              enum: [pldmgr_meta, null]
+            evidence:
+              type: object
+              properties:
+                processes:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pid: {type: integer}
+                      name: {type: string}
+                pldmgr_autoload_file: {type: string}
+                pldmgr_autoload_entry: {type: [string, "null"]}
+                pldmgr_slot_meta: {type: [string, "null"]}
+                pldmgr_payload_file: {type: [string, "null"]}
+                note: {type: string}
+        mechanisms:
+          type: array
+          items:
+            $ref: "#/components/schemas/SystemMechanism"
+        limitations:
+          type: array
+          items:
+            type: object
+            required: [code, severity, message]
+            properties:
+              code:
+                type: string
+                enum: [shellcore_offsets_missing, shellcore_hooks_not_installed, kstuff_not_loaded, registration_unavailable, native_debug_pkg_unavailable, lvd_unavailable, md_unavailable, nullfs_unavailable, unionfs_unavailable]
+              severity:
+                type: string
+                enum: [error, warning, info]
+              message: {type: string}

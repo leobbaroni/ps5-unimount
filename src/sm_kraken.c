@@ -1537,3 +1537,28 @@ bool sm_kraken_relink_base(const sm_pkg_info_t *base, const sm_kraken_job_t *job
   }
   return sm_kraken_apply_patch(base, &patch, job);
 }
+
+bool sm_kraken_runtime_selection(const char *emulators_path,
+                                 char shared_path[MAX_PATH],
+                                 const unsigned char **data, size_t *size,
+                                 unsigned char **owned) {
+  *owned = NULL;
+  shared_path[0] = '\0';
+  if (emulators_path && *emulators_path &&
+      join_path(emulators_path, KRAKEN_AMPR_NAME, shared_path)) {
+    size_t shared_size = 0;
+    unsigned char *shared = read_shared_ampr(shared_path, &shared_size);
+    if (shared) {
+      *owned = shared;
+      *data = shared;
+      *size = shared_size;
+      return true;
+    }
+  }
+  shared_path[0] = '\0';
+  *data = sm_kraken_runtime_start;
+  *size = (size_t)(sm_kraken_runtime_end - sm_kraken_runtime_start);
+  return false;
+}
+
+const char *sm_kraken_bundled_revision(void) { return sm_kraken_revision; }

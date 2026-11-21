@@ -47,4 +47,14 @@ bool sm_kraken_can_relink(const char *cache, const sm_pkg_info_t *base);
 bool sm_kraken_relink_base(const sm_pkg_info_t *base, const sm_kraken_job_t *job,
                            char cache[MAX_PATH], bool keep_patch);
 
+// The AMPR runtime a Kraken launch would install (sm_kraken_refresh_runtime):
+// <emulators_path>/libSceAmpr.sprx when it is a usable ampr-emu-ng build,
+// otherwise the bundled one. *owned is set when data must be freed.
+// Returns true for the shared runtime and copies its path.
+bool sm_kraken_runtime_selection(const char *emulators_path,
+                                 char shared_path[MAX_PATH],
+                                 const unsigned char **data, size_t *size,
+                                 unsigned char **owned);
+const char *sm_kraken_bundled_revision(void);
+
 #endif

@@ -19,6 +19,7 @@ def main():
     types = source[source.index("typedef struct {"):
                    source.index("#define SHELLCORE_RELEASE_MAX_ATTEMPTS")]
     defines = re.findall(r"^#define SHELLCORE_RELEASE_.*$", source, re.M)
+    types += "\n" + re.search(r"typedef struct \{[^}]+\} launch_mount_failure_t;", source)[0]
     names = [
         "launch_preparation_pending_locked", "mount_owner_matches",
         "find_mount_owner_locked", "clear_mount_owner", "set_mount_owner",

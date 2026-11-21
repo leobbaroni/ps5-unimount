@@ -6,6 +6,7 @@
 #include <sys/select.h>
 
 #include "sm_appdb.h"
+#include "sm_diag.h"
 #include "sm_fan.h"
 #include "sm_fakelib.h"
 #include "sm_filesystem.h"
@@ -359,6 +360,7 @@ static game_handoff_result_t try_game_process_handoff(
   sm_pkg_backport_on_exec(pid, title_id);
   sm_fakelib_game_on_exec(pid, title_id, false);
   sm_mdbg_game_handoff(old_pid, pid);
+  sm_diag_note_process_handoff(old_pid, pid);
   publish_active_game(pid, title_id, effective_app_id);
   if (pending_exit)
     clear_pending_game_exit();
@@ -411,6 +413,7 @@ static bool dispatch_game_launch(int kq, pid_t pid, uint64_t exec_time_us,
   if (!same_process) {
     log_debug("  [GAME] started: %s pid=%ld app_id=0x%08X", title_id,
               (long)pid, app_id);
+    sm_diag_note_process_started(title_id, pid, app_id, exec_time_us);
     sm_mdbg_game_on_exec(pid, title_id, exec_time_us);
   }
   sm_pkg_backport_on_exec(pid, title_id);
@@ -755,6 +758,7 @@ static void handle_game_exec(int kq, pid_t pid) {
 static void finalize_game_exit(pid_t pid, uint64_t exit_time_us,
                                const char *fallback_title_id) {
   sm_mdbg_game_on_exit(pid);
+  sm_diag_note_process_finalized(pid, exit_time_us);
   char owned_title_id[MAX_TITLE_ID] = {0};
   bool owned_exit =
       sm_shellcore_service_note_game_exit(pid, exit_time_us, owned_title_id);
@@ -847,6 +851,7 @@ static void handle_game_exit(pid_t pid) {
     // threads never observe an artificial "no game" gap during the handoff.
     queue_pending_game_exit(pid, active_title_id, active_app_id);
     publish_active_game_pid(0);
+    sm_diag_note_process_exit(pid);
 
     // Match the 1.6 fakelib lifetime: release the overlay as soon as this PID
     // exits. Keeping common/lib covered can leave the old sandbox busy and

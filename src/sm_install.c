@@ -83,6 +83,10 @@ bool sm_install_register_title_dir(const char *title_id,
   return true;
 }
 
+bool sm_install_direct_registration_available(void) {
+  return resolve_app_install_title_dir() != NULL;
+}
+
 static bool is_appmeta_file(const char *name) {
   if (!name)
     return false;

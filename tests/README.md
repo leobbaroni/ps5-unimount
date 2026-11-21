@@ -7,6 +7,7 @@ python3 tools/test_scan_permissions.py
 python3 tools/test_exec_permissions.py
 python3 tools/test_shellcore_launch.py --sanitize
 python3 tools/test_sandbox_cleanup.py
+python3 tools/test_diag.py --sanitize
 ```
 
 The config test compiles the production implementation with host stubs for
@@ -23,3 +24,11 @@ discovery while keeping content scans and real I/O failures strict.
 
 The exec permission test checks that game executables gain only their missing
 execute bits, and that directories and symlink targets are left unchanged.
+
+The diagnostics test compiles `src/sm_diag_core.c` with json-c. It covers the
+launch timeline and outcomes (no `running` without a confirmed process, early
+exit, `LAUNCH_FAILED`, handoff, crash, persistence round trip), the console
+error-history parser on real samples (BOM, signed codes to hex), every
+classification rule plus an unknown code, `param.json` firmware comparison,
+PS5 Payload Manager autoload/meta parsing, kernel-log line selection and the
+AMPR runtime version marker of the bundled runtime.

@@ -181,6 +181,9 @@ typedef struct runtime_config {
   uint32_t lvd_sector_pfs;
   uint32_t md_sector_exfat;
   uint32_t md_sector_ufs;
+  bool diagnostics_enabled;
+  uint32_t diagnostics_running_confirm_seconds;
+  uint32_t diagnostics_error_window_seconds;
 } runtime_config_t;
 
 typedef enum {

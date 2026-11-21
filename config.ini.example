@@ -85,6 +85,14 @@ version = 2
 # system: keep the system target; 50..91: apply a temperature target at game launch.
 # target_temperature = system
 
+[diagnostics]
+# Observe launches (GET /api/v1/diagnostics/launches); never delays or changes them.
+# enabled = on
+# A launch counts as running once the game process stayed alive this long: 5..600 seconds.
+# running_confirm_seconds = 20
+# Watch the console error history for this long after a launch request: 10..3600 seconds.
+# error_window_seconds = 120
+
 [sectors]
 # Logical device sector sizes, not filesystem clusters: powers of two, 512..1048576.
 # BFS fast path uses lvd_exfat=512; the exFAT cluster size must be 65536.

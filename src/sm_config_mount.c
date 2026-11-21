@@ -20,6 +20,14 @@
 
 static const char *const k_default_scan_paths[] = SM_DEFAULT_SCAN_PATHS_INITIALIZER;
 
+// [diagnostics] launch observation limits.
+#define DEFAULT_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 20u
+#define MIN_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 5u
+#define MAX_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 600u
+#define DEFAULT_DIAGNOSTICS_ERROR_WINDOW_SECONDS 120u
+#define MIN_DIAGNOSTICS_ERROR_WINDOW_SECONDS 10u
+#define MAX_DIAGNOSTICS_ERROR_WINDOW_SECONDS 3600u
+
 typedef struct {
   char filename[MAX_PATH];
   bool mount_read_only;
@@ -204,6 +212,11 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.lvd_sector_pfs = LVD_SECTOR_SIZE_PFS;
   state->cfg.md_sector_exfat = MD_SECTOR_SIZE_EXFAT;
   state->cfg.md_sector_ufs = MD_SECTOR_SIZE_UFS_OPTIMIZED;
+  state->cfg.diagnostics_enabled = true;
+  state->cfg.diagnostics_running_confirm_seconds =
+      DEFAULT_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS;
+  state->cfg.diagnostics_error_window_seconds =
+      DEFAULT_DIAGNOSTICS_ERROR_WINDOW_SECONDS;
   memset(state->image_mode_rules, 0, sizeof(state->image_mode_rules));
   init_runtime_scan_paths_defaults(state);
 }
@@ -1239,6 +1252,37 @@ static config_load_status_t parse_runtime_config_state(runtime_config_state_t *s
       }
       (void)strlcpy(state->cfg.ampr_update_url, url,
                     sizeof(state->cfg.ampr_update_url));
+      continue;
+    }
+
+    if (strcasecmp(key, "diagnostics_enabled") == 0) {
+      if (!parse_bool_ini(value, &bval)) {
+        invalid = true;
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.diagnostics_enabled = bval;
+      continue;
+    }
+
+    if (strcasecmp(key, "diagnostics_running_confirm_seconds") == 0 ||
+        strcasecmp(key, "diagnostics_error_window_seconds") == 0) {
+      bool confirm = strcasecmp(key, "diagnostics_running_confirm_seconds") == 0;
+      uint32_t min = confirm ? MIN_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS
+                             : MIN_DIAGNOSTICS_ERROR_WINDOW_SECONDS;
+      uint32_t max = confirm ? MAX_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS
+                             : MAX_DIAGNOSTICS_ERROR_WINDOW_SECONDS;
+      if (!parse_u32_ini(value, &u32) || u32 < min || u32 > max) {
+        invalid = true;
+        log_debug("  [CFG] invalid diagnostics value at line %d: %s=%s "
+                  "(range: %u..%u)",
+                  line_no, key, value, (unsigned)min, (unsigned)max);
+        continue;
+      }
+      if (confirm)
+        state->cfg.diagnostics_running_confirm_seconds = u32;
+      else
+        state->cfg.diagnostics_error_window_seconds = u32;
       continue;
     }
 

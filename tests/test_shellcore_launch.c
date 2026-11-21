@@ -47,8 +47,13 @@ static bool is_data_mounted(const char *title) { (void)title; return true; }
 static void sm_fakelib_prepare_title_cache(const char *title, const char *path) {
   (void)title; (void)path;
 }
-static bool prepare_title_runtime(const char *title, char *path, const bool *ro) {
-  (void)title; (void)path; (void)ro; return true;
+static bool prepare_title_runtime(const char *title, char *path, const bool *ro,
+                                  const char **failed_layer) {
+  (void)title; (void)path; (void)ro; (void)failed_layer; return true;
+}
+static void sm_diag_note_launch(const char *title, int status, int native_errno,
+                                const char *layer) {
+  (void)title; (void)status; (void)native_errno; (void)layer;
 }
 static bool unmount_title_runtime_layers(const char *title) {
   (void)title; ++unmounts;
@@ -251,7 +256,9 @@ int main(int argc, char **argv) {
   test_kraken_rebind(argv[1]);
   reset_state();
   kraken_title = package_missing = true;
-  assert(mount_managed_title_runtime(TITLE_A, true, false, NULL) == ENOENT);
+  launch_mount_failure_t failure;
+  assert(mount_managed_title_runtime(TITLE_A, true, false, NULL, &failure) == ENOENT);
+  assert(!strcmp(failure.layer, "kraken_source") && failure.native_errno == ENOENT);
   assert(!launch_preparation_pending_locked() && unmounts == 0);
   package_missing = false;
   start_title(TITLE_A, 0x18, 173);
@@ -267,7 +274,8 @@ int main(int argc, char **argv) {
   abandon_switch();
   assert(handle_launch_request(TITLE_B) == 0 && unmounts == 0);
   abandon_switch();
-  assert(mount_managed_title_runtime(TITLE_C, true, true, NULL) == EBUSY);
+  assert(mount_managed_title_runtime(TITLE_C, true, true, NULL, &failure) == EBUSY);
+  assert(!strcmp(failure.layer, "claim"));
   assert(unmounts == 0); // NOTE_EXEC fallback cannot abandon another launch.
 
   abandon_switch();
