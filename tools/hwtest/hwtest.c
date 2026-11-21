@@ -8,6 +8,7 @@
  *   launch <TITLEID>  -> "ok app_id=0x%08x" | "err busy bigapp=0x..." | "err rc=0x%08x"
  *   kill              -> "ok" | "err rc=0x%08x" | "err none"
  *   browse http://... -> opens the console's web browser at that URL
+ *   read /data/shadowmount/<file> -> the file's bytes (logs and state), or "err open"
  *   quit              -> "ok bye" and the payload exits
  *
  * Launch/kill calls follow ps5-payload-dev/websrv (sys_launch_title), GPL-3.0.
@@ -101,6 +102,26 @@ static int handle(int fd) {
   } else if (strncmp(line, "browse http://", 14) == 0) {
     int rc = sceSystemServiceLaunchWebBrowser(line + 7);
     reply(fd, rc ? "err rc=0x%08x\n" : "ok\n", (uint32_t)rc);
+  } else if (strncmp(line, "read /data/shadowmount/", 23) == 0 && !strstr(line, "..")) {
+    FILE *fp = fopen(line + 5, "rb");
+    if (!fp) {
+      reply(fd, "err open\n", 0);
+    } else {
+      char buf[4096];
+      size_t n;
+      while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        size_t sent = 0;
+        while (sent < n) {
+          ssize_t w = write(fd, buf + sent, n - sent);
+          if (w <= 0)
+            break;
+          sent += (size_t)w;
+        }
+        if (sent < n)
+          break;
+      }
+      fclose(fp);
+    }
   } else if (strcmp(line, "quit") == 0) {
     reply(fd, "ok bye\n", 0);
     return 1;

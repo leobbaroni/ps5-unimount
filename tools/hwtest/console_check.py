@@ -18,6 +18,8 @@ launch  starts a title through UniMount, waits for the launch record to be
         and the console wrote nothing new to its error history. A mounted
         game with an icon is not a pass.
 helper  sends one line to the unimount-hwtest helper payload (tools/hwtest).
+fetch   saves a file from /data/shadowmount/ on the console (debug.log,
+        debug.log.1, ...) through the helper, without starting UniMount.
 
 Nobody watches the TV during these runs: picture and sound are not checked.
 Neither API has authentication. Trusted LAN only.
@@ -59,20 +61,23 @@ class Console:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read().decode("utf-8", "replace").strip()
 
-    def helper(self, line):
+    def helper_bytes(self, line):
         with socket.create_connection(self.helper_address, timeout=8) as connection:
             connection.sendall((line + "\n").encode())
             connection.settimeout(20)
             chunks = []
             try:
                 while True:
-                    chunk = connection.recv(256)
+                    chunk = connection.recv(65536)
                     if not chunk:
                         break
                     chunks.append(chunk)
             except socket.timeout:
                 pass
-        return b"".join(chunks).decode("utf-8", "replace").strip()
+        return b"".join(chunks)
+
+    def helper(self, line):
+        return self.helper_bytes(line).decode("utf-8", "replace").strip()
 
     def version(self):
         return self.api("/version", {})[1]
@@ -184,6 +189,17 @@ def cmd_helper(console, args):
     return 0
 
 
+def cmd_fetch(console, args):
+    data = console.helper_bytes("read " + args.remote)
+    if data.startswith(b"err "):
+        print("FAIL: " + data.decode("utf-8", "replace").strip())
+        return 1
+    with open(args.local, "wb") as handle:
+        handle.write(data)
+    print("%s: %d bytes -> %s" % (args.remote, len(data), args.local))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--console", required=True, help="console host name or address")
@@ -204,6 +220,10 @@ def main():
     helper = commands.add_parser("helper")
     helper.add_argument("line", nargs="+")
     helper.set_defaults(run=cmd_helper)
+    fetch = commands.add_parser("fetch")
+    fetch.add_argument("remote", help="a file under /data/shadowmount/ on the console")
+    fetch.add_argument("local", help="where to save it on this PC")
+    fetch.set_defaults(run=cmd_fetch)
     args = parser.parse_args()
     console = Console(args.console, args.api_port, args.pldmgr_port, args.helper_port)
     try:
