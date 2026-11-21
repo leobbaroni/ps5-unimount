@@ -15,6 +15,7 @@ Scenarios:
     empty    no games, no sources
     sixty    60 synthetic games
     idle     default library with no storage job running
+    readonly idle, but /settings lacks the [compat]/[kraken]/[diagnostics]/[api] keys
     legacy   same library, but /system, /ownership, /diagnostics/*, /games/art
              and game last_launch objects are absent (older engine)
     offline  every API call fails with HTTP 503 (API unreachable)
@@ -51,6 +52,8 @@ OPTIONS: dict = {"scenario": "default", "fixtures": None}
 
 NEW_ROUTES = {"/system", "/ownership", "/diagnostics/launches", "/diagnostics/errors"}
 GET_ONLY = {"/system", "/diagnostics/launches", "/diagnostics/errors"}
+NO_ART = {"PPSA90009", "CUSA90006"}  # these show the icon whole, not cropped
+CONFIRM_SECONDS = 6.0
 
 
 # ---------------------------------------------------------------- artwork --
@@ -182,6 +185,8 @@ def full_game(seed: dict) -> dict:
     if game["platform"] == "ps4":
         game["can_toggle_fakelib"] = False
     game["icon_url"] = f"/api/v1/games/icon?title_id={tid}&size=thumb&v=1-{_seed(tid):08x}"
+    if tid not in NO_ART:
+        game["art_url"] = f"/api/v1/games/art?title_id={tid}&v=1-{_seed(tid):08x}"
     return game
 
 
@@ -221,6 +226,7 @@ def initial_state(scenario: str) -> dict:
     for game in games:
         if scenario == "legacy":
             game.pop("last_launch", None)
+            game.pop("art_url", None)
         else:
             game.setdefault("last_launch", None)
     kraken = {g["title_id"] for g in (load_json("games.json") or {"games": []})["games"] if g.get("kraken")}
@@ -241,11 +247,13 @@ def initial_state(scenario: str) -> dict:
             "update_emulators": True, "fakelib_default_mode": "full", "auto_update_ampr": False,
             "auto_remove_missing_games": False, "auto_remove_missing_delay_seconds": 300,
             "fan_target_temperature": 0,
-            "compat_kraken_api": True, "compat_kraken_api_port": 8097, "kraken_auto_mount": True,
-            "kraken_inject_ampr": True, "diagnostics_enabled": True,
-            "diagnostics_running_confirm_seconds": 20, "diagnostics_error_window_seconds": 120,
-            "api_allow_launch": True,
+            **({} if scenario == "legacy" or OPTIONS.get("readonly") else {
+                "compat_kraken_api": True, "compat_kraken_api_port": 8097, "kraken_auto_mount": True,
+                "kraken_inject_ampr": True, "diagnostics_enabled": True, "diagnostics_running_confirm_seconds": 20,
+                "diagnostics_error_window_seconds": 120, "api_allow_launch": True}),
         },
+        "running": "PPSA90001" if scenario != "empty" else None,
+        "launches": {},
         "smb": [{"name": "NAS", "path": "smb://nas.home.example/homebrew", "username": "", "active": True,
                  "read_only": False, "password_set": False}] if scenario != "empty" else [],
         "job": job,
@@ -332,7 +340,25 @@ def find_game(title_id: str) -> dict:
     raise ApiError(404, 2, "unknown title")
 
 
+def settle_launches() -> None:
+    s = state()
+    now = time.time()
+    for tid, started in list(s["launches"].items()):
+        game = next((g for g in s["games"] if g["title_id"] == tid), None)
+        if not game:
+            continue
+        elapsed = now - started
+        ll = game["last_launch"]
+        if elapsed >= 2.0:
+            s["running"] = tid
+            game["mounted"] = True
+        if elapsed >= CONFIRM_SECONDS:
+            ll["outcome"] = "running"
+            del s["launches"][tid]
+
+
 def list_games(body: dict) -> dict:
+    settle_launches()
     s = state()
     games = []
     legacy = s["scenario"] == "legacy"
@@ -504,17 +530,23 @@ def launch_record(game: dict, ll: dict) -> dict:
     stages = {k: dict(none) for k in ("mounted", "registered", "launch_requested", "sandbox_ready",
                                        "process_started", "running_confirmed", "exited")}
     order = list(stages)
+    base_ms = int(time.mktime(time.strptime(ll["at"], "%Y-%m-%d %H:%M:%S")) * 1000) if len(ll["at"]) == 19 else 0
+    offsets = {"mounted": 0, "registered": 40, "launch_requested": 60, "sandbox_ready": 900, "process_started": 1300,
+               "running_confirmed": 21300, "exited": 5500}
     reach = {"running": 6, "exited_normally": 7, "crashed": 5, "spawn_failed": 3, "mount_failed": 0,
              "launch_in_progress": 3, "exited_early": 5}.get(outcome, 0)
     for i, key in enumerate(order[:reach]):
         stages[key] = dict(ok)
+    for key in order:
+        if stages[key]["state"] in ("ok", "failed") and base_ms:
+            stages[key]["at_unix_ms"] = base_ms + offsets[key]
     if outcome == "mount_failed":
-        stages["mounted"] = dict(failed, detail="nmount exfatfs: Input/output error")
+        stages["mounted"] = dict(failed, detail="nmount exfatfs: Input/output error", at_unix_ms=base_ms)
     elif outcome == "spawn_failed":
         stages["process_started"] = dict(failed, detail="spawn returned 0x80AA001A")
     elif outcome == "crashed":
-        stages["running_confirmed"] = dict(failed, detail="process exited after 4.2 s")
-        stages["exited"] = dict(ok)
+        stages["running_confirmed"] = dict(failed, detail="process exited before confirmation", at_unix_ms=base_ms + 5500)
+        stages["exited"] = dict(ok, at_unix_ms=base_ms + 5500)
     elif outcome == "launch_in_progress":
         stages["process_started"] = dict(pending)
     native = []
@@ -539,9 +571,11 @@ def launch_record(game: dict, ll: dict) -> dict:
         }.get(ll["category"], [])
         diagnosis = {"category": ll["category"], "confidence": "observed", "rule": f"rule_{ll['category']}",
                      "evidence": evidence, "advice": advice}
-    return {"id": ll["id"], "title_id": game["title_id"], "managed": True, "at": ll["at"], "outcome": outcome,
+    process = {"pid": 4412, "app_id": "0x60000012", "alive_seconds": 4.2} if outcome == "crashed" else None
+    return {"id": ll["id"], "title_id": game["title_id"], "managed": True, "at": ll["at"], "at_unix_ms": base_ms,
+            "process": process, "outcome": outcome,
             "observation_interrupted": False, "short_error": ll.get("short_error"), "launch_attempts": 1,
-            "stages": stages, "mount": None, "process": None, "environment": {"kstuff_loaded": True,
+            "stages": stages, "mount": None, "environment": {"kstuff_loaded": True,
             "shellcore_hooks_installed": True, "console_firmware": "13.60", "required_firmware": "7.00"},
             "native_errors": native, "diagnosis": diagnosis,
             "timeline": [{"at": ll["at"], "event": "launch_requested", "detail": game["title_id"]}]}
@@ -575,7 +609,8 @@ def handle_api(route: str, body: dict):
         if legacy:
             return {"api_version": 1, "shadowmount_version": "1.7", "capabilities": caps}
         return {"api_version": 1, "shadowmount_version": "1.7", "product": "UniMount", "unimount_version": "0.1.0",
-                "kraken_mount_version": "0.3.1", "kraken_mount_revision": "e1e7845", "capabilities": caps + ["ownership", "settings_unimount"]}
+                "kraken_mount_version": "0.3.1", "kraken_mount_revision": "e1e7845",
+                "capabilities": caps + ["ownership", "game_art", "launch_game", "close_game", "settings_unimount"]}
     if route == "/games":
         return list_games(body)
     if route == "/games/info":
@@ -664,6 +699,38 @@ def handle_api(route: str, body: dict):
         return start_job(op, title_id=game["title_id"], title_name=game["title_name"], source=game["path"],
                          destination=body.get("destination_dir", ""), source_type=game["source_type"],
                          total=game.get("size_bytes", 4294967296))
+    if route == "/games/running":
+        settle_launches()
+        tid = s["running"]
+        return {"running": bool(tid), "app_id": 1610612754 if tid else -1, "app_id_hex": "0x60000012" if tid else "0xFFFFFFFF",
+                "title_id": tid, "pid": 4412 if tid else None}
+    if route == "/games/launch":
+        if not s["settings"].get("api_allow_launch", True):
+            raise ApiError(403, 1, "launching is disabled", "launch_disabled")
+        game = find_game(body.get("title_id", ""))
+        if s["running"] and s["running"] != game["title_id"] and body.get("replace") is not True:
+            raise ApiError(409, 16, "another application is running", "app_running")
+        replaced = bool(s["running"] and s["running"] != game["title_id"])
+        if replaced:
+            for other in s["games"]:
+                if other["title_id"] == s["running"] and other.get("last_launch"):
+                    other["last_launch"]["outcome"] = "exited_normally"
+        s["running"] = None
+        game["last_launch"] = {"id": 100 + len(s["launches"]) + int(time.time()) % 1000, "outcome": "launch_in_progress",
+                               "at": time.strftime("%Y-%m-%d %H:%M:%S"), "short_error": None, "category": None}
+        s["launches"][game["title_id"]] = time.time()
+        return {"title_id": game["title_id"], "app_id": 1610612754, "app_id_hex": "0x60000012", "replaced": replaced}
+    if route == "/games/close":
+        tid = s["running"]
+        if not tid:
+            raise ApiError(409, 16, "nothing is running", "no_app_running")
+        if body.get("title_id") and body["title_id"] != tid:
+            raise ApiError(409, 16, "a different title is running", "title_mismatch")
+        s["running"] = None
+        for game in s["games"]:
+            if game["title_id"] == tid and game.get("last_launch"):
+                game["last_launch"]["outcome"] = "exited_normally"
+        return {"closed": True, "app_id": 1610612754, "app_id_hex": "0x60000012", "title_id": tid}
     if route == "/games/storage/status":
         return current_job()
     if route == "/games/storage/cancel":
@@ -796,8 +863,9 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith("/__scenario/"):
             name = url.path.rsplit("/", 1)[1]
             with LOCK:
-                OPTIONS["job"] = name != "idle"
-                OPTIONS["scenario"] = "default" if name == "idle" else name
+                OPTIONS["job"] = name not in ("idle", "readonly")
+                OPTIONS["readonly"] = name == "readonly"
+                OPTIONS["scenario"] = "default" if name in ("idle", "readonly") else name
                 STATE.clear()
             return self._send(200, f"scenario={name}\n".encode(), "text/plain")
         if url.path == "/favicon.png":
@@ -815,6 +883,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/v1/games/art":
             if state()["scenario"] == "legacy" or OPTIONS.get("fixtures"):
                 return self._json(404, {"status": 2, "error": "unknown API route"})
+            if title in NO_ART:
+                return self._json(404, {"status": 2, "error": "no key art", "error_reason": "art_unavailable"})
             size = (query.get("size") or ["tv"])[0]
             w, h = (1920, 1080) if size == "tv" else (640, 360)
             return self._send(200, art_svg(title, w, h).encode(), "image/svg+xml")
