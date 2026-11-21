@@ -201,7 +201,7 @@ A successful version response has this shape:
   "unimount_version": "0.1.0",
   "kraken_mount_version": "0.3.0",
   "kraken_mount_revision": "e1e7845",
-  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan", "ownership", "game_art", "launch_game", "close_game"]
+  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan", "ownership", "game_art", "launch_game", "close_game", "settings_unimount"]
 }
 ```
 
@@ -557,7 +557,8 @@ included. A missing `manual.lst` is reported as an empty list.
 The settings update owns only `debug`, `quiet_mode`, `update_emulators`,
 `fakelib_default_mode`, `auto_update_ampr`, `auto_remove_missing_games`,
 `auto_remove_missing_delay_seconds`,
-`api_bind_address`, `fan_target_temperature`, and repeated `scanpath` keys. The
+`api_bind_address`, `fan_target_temperature`, repeated `scanpath` keys and the
+UniMount keys listed under [UniMount settings](#unimount-settings). The
 `allow_lan_access` field maps to `0.0.0.0` when enabled and `127.0.0.1` when
 disabled. Updates preserve unrelated settings and apply through runtime reload.
 `api_enabled` is config-only and cannot be changed through this endpoint.
@@ -571,6 +572,43 @@ an empty array removes the custom override and restores compile-time defaults.
 `disabled`; initial default `full`). The settings update accepts the same
 optional field; omission preserves its current value for older clients.
 Per-title overrides take priority, and mode changes apply on the next launch.
+
+### UniMount settings
+
+Builds advertising the `settings_unimount` capability also return and accept
+these flat fields (each maps to one `config.ini` key):
+
+| Field | Type | `config.ini` key | Values |
+| --- | --- | --- | --- |
+| `compat_kraken_api` | boolean | `[compat] kraken_api` | default `true` |
+| `compat_kraken_api_port` | integer | `[compat] kraken_api_port` | 1..65535, default 8097 |
+| `kraken_auto_mount` | boolean | `[kraken] auto_mount` | default `true` |
+| `kraken_inject_ampr` | boolean | `[kraken] inject_ampr` | default `true` |
+| `diagnostics_enabled` | boolean | `[diagnostics] enabled` | default `true` |
+| `diagnostics_running_confirm_seconds` | integer | `[diagnostics] running_confirm_seconds` | 5..600, default 20 |
+| `diagnostics_error_window_seconds` | integer | `[diagnostics] error_window_seconds` | 10..3600, default 120 |
+| `api_allow_launch` | boolean | `[api] allow_launch` | default `true` |
+
+`POST /api/v1/settings` always includes all eight. In the update every one is
+optional; an omitted field keeps its current value (the existing required
+fields stay required). A wrong JSON type returns `400` with
+`settings fields have invalid types`; an out-of-range number returns `400`
+with, for example, `compat_kraken_api_port must be 1..65535`. Nothing is written
+when any field is rejected. Accepted values are written in the same atomic
+`config.ini` update as the other settings, keeping comments and unrelated keys.
+
+None of these settings needs a payload restart:
+
+- `api_allow_launch`, `compat_kraken_api`, `compat_kraken_api_port`,
+  `kraken_inject_ampr` and the three `diagnostics_*` fields take effect when the
+  update returns. The Kraken-compatible listener opens, closes or moves to the
+  new port within about a second (`compat_listener` in `/api/v1/ownership`);
+  launch and close requests check `api_allow_launch` on every request;
+  `kraken_inject_ampr` applies to the next fakelib preparation and the
+  diagnostics fields to subsequent launches.
+- `kraken_auto_mount` applies through the runtime reload. Disabling it stops
+  automatic PKG mounts not yet started; enabling it queues a scan so packages
+  already in the scan roots are considered.
 
 The debug-log route returns at most 256 KiB and never modifies or rotates the log.
 The kernel-log route returns a kernel-log snapshot.

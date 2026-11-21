@@ -755,7 +755,8 @@ static void handle_version(struct MHD_Connection *fd) {
       !append_json_string(capabilities, "ownership") ||
       !append_json_string(capabilities, "game_art") ||
       !append_json_string(capabilities, "launch_game") ||
-      !append_json_string(capabilities, "close_game")) {
+      !append_json_string(capabilities, "close_game") ||
+      !append_json_string(capabilities, "settings_unimount")) {
     json_object_put(capabilities);
     json_object_put(response);
     send_out_of_memory_response(fd);
@@ -3067,13 +3068,121 @@ static void handle_settings(struct MHD_Connection *connection) {
                     cfg.auto_remove_missing_delay_seconds) ||
       !add_json_int(response, "fan_target_temperature",
                     cfg.fan_target_temperature_c) ||
-      !add_json_int(response, "scan_path_count", (int64_t)count)) {
+      !add_json_int(response, "scan_path_count", (int64_t)count) ||
+      !add_json_bool(response, "compat_kraken_api",
+                     cfg.compat_kraken_api_enabled) ||
+      !add_json_int(response, "compat_kraken_api_port",
+                    cfg.compat_kraken_api_port) ||
+      !add_json_bool(response, "kraken_auto_mount",
+                     cfg.kraken_auto_mount_enabled) ||
+      !add_json_bool(response, "kraken_inject_ampr",
+                     cfg.kraken_inject_ampr_enabled) ||
+      !add_json_bool(response, "diagnostics_enabled", cfg.diagnostics_enabled) ||
+      !add_json_int(response, "diagnostics_running_confirm_seconds",
+                    cfg.diagnostics_running_confirm_seconds) ||
+      !add_json_int(response, "diagnostics_error_window_seconds",
+                    cfg.diagnostics_error_window_seconds) ||
+      !add_json_bool(response, "api_allow_launch", cfg.api_allow_launch)) {
     json_object_put(response);
     send_out_of_memory_response(connection);
     return;
   }
   (void)send_json_object(connection, 200, response);
   json_object_put(response);
+}
+
+// Optional UniMount fields of a settings update. A type error or a value the
+// config parser would reject fails the whole update before anything is written.
+static bool get_unimount_setting_bool(struct json_object *request,
+                                      const char *key, bool *present_out,
+                                      bool *value_out) {
+  struct json_object *value = NULL;
+  *present_out = json_object_object_get_ex(request, key, &value);
+  if (!*present_out)
+    return true;
+  if (!json_object_is_type(value, json_type_boolean))
+    return false;
+  *value_out = json_object_get_boolean(value) != 0;
+  return true;
+}
+
+static bool get_unimount_setting_u32(struct json_object *request,
+                                     const char *key, uint32_t min,
+                                     uint32_t max, bool *present_out,
+                                     uint32_t *value_out, bool *range_out) {
+  struct json_object *value = NULL;
+  *present_out = json_object_object_get_ex(request, key, &value);
+  if (!*present_out)
+    return true;
+  if (!json_object_is_type(value, json_type_int))
+    return false;
+  int64_t number = json_object_get_int64(value);
+  if (number < (int64_t)min || number > (int64_t)max) {
+    *range_out = false;
+    return false;
+  }
+  *value_out = (uint32_t)number;
+  return true;
+}
+
+static bool get_unimount_settings(struct MHD_Connection *connection,
+                                  struct json_object *request,
+                                  sm_config_unimount_settings_t *out) {
+  static const struct {
+    const char *key;
+    const char *range_message;
+    uint32_t min;
+    uint32_t max;
+  } numbers[] = {
+      {"compat_kraken_api_port", "compat_kraken_api_port must be 1..65535",
+       1u, 65535u},
+      {"diagnostics_running_confirm_seconds",
+       "diagnostics_running_confirm_seconds must be 5..600",
+       MIN_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS,
+       MAX_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS},
+      {"diagnostics_error_window_seconds",
+       "diagnostics_error_window_seconds must be 10..3600",
+       MIN_DIAGNOSTICS_ERROR_WINDOW_SECONDS,
+       MAX_DIAGNOSTICS_ERROR_WINDOW_SECONDS},
+  };
+  memset(out, 0, sizeof(*out));
+  bool *number_present[] = {&out->has_compat_kraken_api_port,
+                            &out->has_diagnostics_running_confirm_seconds,
+                            &out->has_diagnostics_error_window_seconds};
+  uint32_t *number_value[] = {&out->compat_kraken_api_port,
+                              &out->diagnostics_running_confirm_seconds,
+                              &out->diagnostics_error_window_seconds};
+  if (!get_unimount_setting_bool(request, "compat_kraken_api",
+                                 &out->has_compat_kraken_api,
+                                 &out->compat_kraken_api) ||
+      !get_unimount_setting_bool(request, "kraken_auto_mount",
+                                 &out->has_kraken_auto_mount,
+                                 &out->kraken_auto_mount) ||
+      !get_unimount_setting_bool(request, "kraken_inject_ampr",
+                                 &out->has_kraken_inject_ampr,
+                                 &out->kraken_inject_ampr) ||
+      !get_unimount_setting_bool(request, "diagnostics_enabled",
+                                 &out->has_diagnostics_enabled,
+                                 &out->diagnostics_enabled) ||
+      !get_unimount_setting_bool(request, "api_allow_launch",
+                                 &out->has_api_allow_launch,
+                                 &out->api_allow_launch)) {
+    send_error_response(connection, 400, EINVAL,
+                        "settings fields have invalid types");
+    return false;
+  }
+  for (size_t i = 0; i < sizeof(numbers) / sizeof(numbers[0]); ++i) {
+    bool in_range = true;
+    if (!get_unimount_setting_u32(request, numbers[i].key, numbers[i].min,
+                                  numbers[i].max, number_present[i],
+                                  number_value[i], &in_range)) {
+      send_error_response(connection, 400, EINVAL,
+                          in_range ? "settings fields have invalid types"
+                                   : numbers[i].range_message);
+      return false;
+    }
+  }
+  return true;
 }
 
 static void handle_settings_update(struct MHD_Connection *connection,
@@ -3149,6 +3258,10 @@ static void handle_settings_update(struct MHD_Connection *connection,
     return;
   }
 
+  sm_config_unimount_settings_t unimount;
+  if (!get_unimount_settings(connection, request, &unimount))
+    return;
+
   size_t path_count = json_object_array_length(paths_value);
   if (path_count > MAX_SCAN_PATHS) {
     send_error_response(connection, 400, EINVAL, "too many scan paths");
@@ -3169,13 +3282,13 @@ static void handle_settings_update(struct MHD_Connection *connection,
     }
     paths[i] = json_object_get_string(item);
   }
-  if (!valid || !sm_config_write_web_settings(
+  if (!valid || !sm_config_write_web_settings_ex(
                     debug_enabled, quiet_mode, update_emulators,
                     auto_update_ampr, auto_remove_missing_games,
                     (uint32_t)remove_delay_int,
                     allow_lan_access,
                     (uint32_t)fan_value_int, paths, path_count,
-                    fakelib_default_mode)) {
+                    fakelib_default_mode, &unimount)) {
     int status = valid && errno != 0 ? errno : EINVAL;
     free(paths);
     send_error_response(connection, operation_http_status(status), status,

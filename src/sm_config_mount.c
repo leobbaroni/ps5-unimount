@@ -20,13 +20,9 @@
 
 static const char *const k_default_scan_paths[] = SM_DEFAULT_SCAN_PATHS_INITIALIZER;
 
-// [diagnostics] launch observation limits.
+// [diagnostics] launch observation defaults; limits are in sm_limits.h.
 #define DEFAULT_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 20u
-#define MIN_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 5u
-#define MAX_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS 600u
 #define DEFAULT_DIAGNOSTICS_ERROR_WINDOW_SECONDS 120u
-#define MIN_DIAGNOSTICS_ERROR_WINDOW_SECONDS 10u
-#define MAX_DIAGNOSTICS_ERROR_WINDOW_SECONDS 3600u
 
 typedef struct {
   char filename[MAX_PATH];
@@ -1773,7 +1769,87 @@ bool sm_config_write_web_settings(bool debug_enabled, bool quiet_mode,
                                   const char *const *scan_paths,
                                   size_t scan_path_count,
                                   sm_fakelib_mode_t fakelib_default_mode) {
-  if (auto_remove_missing_delay_seconds <
+  return sm_config_write_web_settings_ex(
+      debug_enabled, quiet_mode, update_emulators_enabled,
+      auto_update_ampr_enabled, auto_remove_missing_games,
+      auto_remove_missing_delay_seconds, allow_lan_access,
+      fan_target_temperature_c, scan_paths, scan_path_count,
+      fakelib_default_mode, NULL);
+}
+
+static bool unimount_settings_valid(const sm_config_unimount_settings_t *u) {
+  return !u ||
+      ((!u->has_compat_kraken_api_port ||
+        (u->compat_kraken_api_port >= 1u && u->compat_kraken_api_port <= 65535u)) &&
+       (!u->has_diagnostics_running_confirm_seconds ||
+        (u->diagnostics_running_confirm_seconds >= MIN_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS &&
+         u->diagnostics_running_confirm_seconds <= MAX_DIAGNOSTICS_RUNNING_CONFIRM_SECONDS)) &&
+       (!u->has_diagnostics_error_window_seconds ||
+        (u->diagnostics_error_window_seconds >= MIN_DIAGNOSTICS_ERROR_WINDOW_SECONDS &&
+         u->diagnostics_error_window_seconds <= MAX_DIAGNOSTICS_ERROR_WINDOW_SECONDS)));
+}
+
+static bool set_ini_bool(sm_ini_t *doc, bool present, const char *section,
+                         const char *key, bool value) {
+  return !present || sm_ini_set(doc, section, key, value ? "on" : "off");
+}
+
+static bool set_ini_u32(sm_ini_t *doc, bool present, const char *section,
+                        const char *key, uint32_t value) {
+  char text[16];
+  snprintf(text, sizeof(text), "%u", value);
+  return !present || sm_ini_set(doc, section, key, text);
+}
+
+static bool set_unimount_settings(sm_ini_t *main,
+                                  const sm_config_unimount_settings_t *u) {
+  return !u ||
+      (set_ini_bool(main, u->has_compat_kraken_api, "compat", "kraken_api",
+                    u->compat_kraken_api) &&
+       set_ini_u32(main, u->has_compat_kraken_api_port, "compat", "kraken_api_port",
+                   u->compat_kraken_api_port) &&
+       set_ini_bool(main, u->has_kraken_auto_mount, "kraken", "auto_mount",
+                    u->kraken_auto_mount) &&
+       set_ini_bool(main, u->has_kraken_inject_ampr, "kraken", "inject_ampr",
+                    u->kraken_inject_ampr) &&
+       set_ini_bool(main, u->has_diagnostics_enabled, "diagnostics", "enabled",
+                    u->diagnostics_enabled) &&
+       set_ini_u32(main, u->has_diagnostics_running_confirm_seconds, "diagnostics",
+                   "running_confirm_seconds", u->diagnostics_running_confirm_seconds) &&
+       set_ini_u32(main, u->has_diagnostics_error_window_seconds, "diagnostics",
+                   "error_window_seconds", u->diagnostics_error_window_seconds) &&
+       set_ini_bool(main, u->has_api_allow_launch, "api", "allow_launch",
+                    u->api_allow_launch));
+}
+
+// Settings read on every use take effect before the scanner's debounced
+// reload. kraken_auto_mount is left to that reload: enabling it needs a rescan.
+static void publish_unimount_settings_locked(void) {
+  pthread_mutex_lock(&g_runtime_state_mutex);
+  runtime_config_t *dst = &g_runtime_state.cfg, *src = &g_runtime_parse_state.cfg;
+  dst->compat_kraken_api_enabled = src->compat_kraken_api_enabled;
+  dst->compat_kraken_api_port = src->compat_kraken_api_port;
+  dst->kraken_inject_ampr_enabled = src->kraken_inject_ampr_enabled;
+  dst->diagnostics_enabled = src->diagnostics_enabled;
+  dst->diagnostics_running_confirm_seconds = src->diagnostics_running_confirm_seconds;
+  dst->diagnostics_error_window_seconds = src->diagnostics_error_window_seconds;
+  dst->api_allow_launch = src->api_allow_launch;
+  pthread_mutex_unlock(&g_runtime_state_mutex);
+}
+
+bool sm_config_write_web_settings_ex(bool debug_enabled, bool quiet_mode,
+                                     bool update_emulators_enabled,
+                                     bool auto_update_ampr_enabled,
+                                     bool auto_remove_missing_games,
+                                     uint32_t auto_remove_missing_delay_seconds,
+                                     bool allow_lan_access,
+                                     uint32_t fan_target_temperature_c,
+                                     const char *const *scan_paths,
+                                     size_t scan_path_count,
+                                     sm_fakelib_mode_t fakelib_default_mode,
+                                     const sm_config_unimount_settings_t *unimount) {
+  if (!unimount_settings_valid(unimount) ||
+      auto_remove_missing_delay_seconds <
           MIN_AUTO_REMOVE_MISSING_DELAY_SECONDS ||
       auto_remove_missing_delay_seconds >
           MAX_AUTO_REMOVE_MISSING_DELAY_SECONDS ||
@@ -1837,7 +1913,9 @@ bool sm_config_write_web_settings(bool debug_enabled, bool quiet_mode,
       sm_ini_set(&main, "scan", "path", NULL);
   for (size_t i = 0; ok && i < normalized_count; ++i)
     ok = sm_ini_append(&main, "scan", "path", normalized_paths[i]);
+  if (ok) ok = set_unimount_settings(&main, unimount);
   if (ok) ok = save_document(&main, &profiles, false, false);
+  if (ok && unimount) publish_unimount_settings_locked();
   int error = errno;
   free(normalized_paths);
   sm_ini_free(&main); sm_ini_free(&profiles);

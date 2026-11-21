@@ -1342,6 +1342,12 @@ static bool apply_runtime_config_reload_effects(int kq,
                          : "persistent image mounting disabled");
   }
 
+  // Packages are only noted for automatic mounting while it is enabled.
+  if (!old_cfg->kraken_auto_mount_enabled &&
+      new_cfg->kraken_auto_mount_enabled) {
+    request_scan_now("automatic PKG mounting enabled");
+  }
+
   if (scan_topology_changed) {
     clear_scanner_watch_entries();
     reset_scanner_root_states();

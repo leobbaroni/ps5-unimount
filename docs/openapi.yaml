@@ -819,7 +819,7 @@ paths:
     post:
       operationId: updateSettings
       summary: Atomically update web-managed config.ini keys
-      description: Preserves unrelated keys and comments, then queues scanner-owned runtime reload.
+      description: Preserves unrelated keys and comments, then queues scanner-owned runtime reload. The UniMount fields (settings_unimount capability) are optional; none needs a payload restart. Any invalid field rejects the whole update without writing.
       tags: [Settings]
       requestBody:
         required: true
@@ -2453,12 +2453,42 @@ components:
             type: string
             pattern: "^/.+"
             maxLength: 1023
+        compat_kraken_api:
+          type: boolean
+          description: "[compat] kraken_api. Kraken-compatible listener; opens or closes without a restart. Omission preserves the current value. Requires the settings_unimount capability."
+        compat_kraken_api_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: "[compat] kraken_api_port (default 8097). The listener rebinds without a restart. Omission preserves the current value."
+        kraken_auto_mount:
+          type: boolean
+          description: "[kraken] auto_mount. Applies through the runtime reload; enabling it queues a scan. Omission preserves the current value."
+        kraken_inject_ampr:
+          type: boolean
+          description: "[kraken] inject_ampr. Applies to the next fakelib preparation. Omission preserves the current value."
+        diagnostics_enabled:
+          type: boolean
+          description: "[diagnostics] enabled. Applies to subsequent launches. Omission preserves the current value."
+        diagnostics_running_confirm_seconds:
+          type: integer
+          minimum: 5
+          maximum: 600
+          description: "[diagnostics] running_confirm_seconds (default 20). Applies to subsequent launches. Omission preserves the current value."
+        diagnostics_error_window_seconds:
+          type: integer
+          minimum: 10
+          maximum: 3600
+          description: "[diagnostics] error_window_seconds (default 120). Applies to subsequent launches. Omission preserves the current value."
+        api_allow_launch:
+          type: boolean
+          description: "[api] allow_launch. Checked by /api/v1/games/launch and /close on every request. Omission preserves the current value."
 
     SettingsResponse:
       allOf:
         - $ref: "#/components/schemas/SettingsUpdateRequest"
         - type: object
-          required: [status, api_enabled, scan_path_count, fakelib_default_mode]
+          required: [status, api_enabled, scan_path_count, fakelib_default_mode, compat_kraken_api, compat_kraken_api_port, kraken_auto_mount, kraken_inject_ampr, diagnostics_enabled, diagnostics_running_confirm_seconds, diagnostics_error_window_seconds, api_allow_launch]
           properties:
             status:
               type: integer
@@ -2544,8 +2574,8 @@ components:
           type: array
           items:
             type: string
-            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, pkg_mount, ownership, game_art, launch_game, close_game]
-          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, ownership, game_art, launch_game, close_game]
+            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, pkg_mount, ownership, game_art, launch_game, close_game, settings_unimount]
+          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, ownership, game_art, launch_game, close_game, settings_unimount]
 
     OwnershipResponse:
       type: object
