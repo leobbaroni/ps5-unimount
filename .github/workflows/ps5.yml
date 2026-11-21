@@ -52,6 +52,7 @@ jobs:
             curl \
             git \
             libarchive-tools \
+            libjson-c-dev \
             libtool \
             lld-18 \
             makepkg \
