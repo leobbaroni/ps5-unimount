@@ -32,6 +32,10 @@
 #include "sm_limits.h"
 #include "sm_mdbg.h"
 #include "sm_paths.h"
+#include "sm_kraken_auto.h"
+#include "sm_kraken_compat.h"
+#include "sm_takeover.h"
+#include "sm_unimount.h"
 
 #ifndef SHADOWMOUNT_VERSION
 #define SHADOWMOUNT_VERSION "unknown"
@@ -606,11 +610,13 @@ int main(void) {
   char firmware_version[32];
   get_firmware_version_string(firmware_version);
   log_debug(
-      "ShadowMount+ v%s exFAT/UFS/PFS/LVD/MD. "
+      "%s %s (ShadowMount+ %s, Kraken Mount %s rev %s) exFAT/UFS/PFS/LVD/MD/PKG. "
       "FW: %s. "
       "Build: %s. "
-      "Thx to VoidWhisper/Gezine/Earthonion/EchoStretch/Drakmor",
-      SHADOWMOUNT_VERSION, firmware_version, SHADOWMOUNT_BUILD_TIME);
+      "Thx to VoidWhisper/Gezine/Earthonion/EchoStretch/Drakmor/quer3q",
+      UNIMOUNT_PRODUCT, UNIMOUNT_VERSION, SHADOWMOUNT_VERSION,
+      KRAKEN_MOUNT_RELEASE, KRAKEN_MOUNT_REVISION, firmware_version,
+      SHADOWMOUNT_BUILD_TIME);
   if (restarted_previous_instance)
     log_debug("[RESTART] Previous instance stopped, continuing startup");
   const runtime_config_t startup_cfg = runtime_config();
@@ -620,6 +626,16 @@ int main(void) {
     goto shutdown;
   }
   stop_conflicting_backpork();
+  // Real Kraken Mount and UniMount must not own mounts at the same time.
+  if (!sm_takeover_run()) {
+    log_debug("[SHUTDOWN] stop requested while taking over from Kraken Mount");
+    goto shutdown;
+  }
+  sm_ownership_begin();
+  if (!sm_kraken_compat_start())
+    log_debug("  [COMPAT] listener thread unavailable: %s", strerror(errno));
+  if (!sm_kraken_auto_start())
+    log_debug("  [AUTO] automatic PKG mount unavailable: %s", strerror(errno));
   sm_mdbg_init();
   if (!sm_shellcore_service_start())
     log_debug("  [SHELLCORE] Unix socket service unavailable: %s",
@@ -649,10 +665,12 @@ int main(void) {
     char web_address[MAX_API_BIND_ADDRESS];
     resolve_web_interface_address(startup_cfg.api_bind_address, web_address,
                                   sizeof(web_address));
-    notify_system_l10n(SM_L10N_STARTUP_WEB, SHADOWMOUNT_VERSION,
-                       web_address, startup_cfg.api_port);
+    notify_system_l10n(SM_L10N_STARTUP_WEB, UNIMOUNT_VERSION,
+                       SHADOWMOUNT_VERSION, KRAKEN_MOUNT_RELEASE, web_address,
+                       startup_cfg.api_port);
   } else {
-    notify_system_l10n(SM_L10N_STARTUP, SHADOWMOUNT_VERSION);
+    notify_system_l10n(SM_L10N_STARTUP, UNIMOUNT_VERSION, SHADOWMOUNT_VERSION,
+                       KRAKEN_MOUNT_RELEASE);
   }
   log_non_empty_scan_paths();
 
@@ -686,6 +704,8 @@ int main(void) {
   sm_scanner_run_loop();
 
 shutdown:
+  sm_kraken_auto_stop();
+  sm_kraken_compat_stop();
   sm_ampr_updater_stop();
   sm_api_service_stop();
   // Stop ShellCore producers before their lifecycle and mount-state owners.
@@ -711,6 +731,7 @@ shutdown:
     log_debug("[KSTUFF] keeping automount disabled after incomplete teardown");
   }
   shutdown_app_db();
+  sm_ownership_end();
 
   if (atomic_load_explicit(&g_shutdown_on_going_stop_requested,
                            memory_order_acquire)) {

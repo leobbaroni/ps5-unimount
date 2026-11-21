@@ -21,6 +21,7 @@
 #include "sm_image.h"
 #include "sm_install_queue.h"
 #include "sm_kraken.h"
+#include "sm_kraken_auto.h"
 #include "sm_manual.h"
 #include "sm_self.h"
 #include "sm_shellcore_service.h"
@@ -823,6 +824,18 @@ static bool collect_candidate_image_visit(const char *image_path,
   return true;
 }
 
+// Debug .pkg files are only noted here; sm_kraken_auto decides off-thread.
+static bool collect_candidate_package_visit(const char *package_path,
+                                            const char *package_name,
+                                            unsigned int depth_from_root,
+                                            void *ctx_ptr) {
+  (void)package_name;
+  (void)depth_from_root;
+  collect_candidates_walk_ctx_t *ctx = (collect_candidates_walk_ctx_t *)ctx_ptr;
+  sm_kraken_auto_note_package(package_path, ctx->unstable_found_out);
+  return true;
+}
+
 static void collect_scan_candidates_from_manual_root(
     const char *scan_path, const char *manual_source_path,
     scan_candidate_t *candidates, int max_candidates, int *candidate_count,
@@ -1355,6 +1368,7 @@ static void collect_scan_candidates_from_root(
   sm_scan_tree_callbacks_t callbacks = {
       .on_directory = collect_candidate_directory_visit,
       .on_image_file = collect_candidate_image_visit,
+      .on_package_file = collect_candidate_package_visit,
   };
   if (!sm_scan_tree_walk(scan_path, scan_path, 0u, scan_depth, &callbacks, &ctx) &&
       unstable_found_out)
@@ -1407,6 +1421,9 @@ static void collect_registered_kraken_games(const scan_app_db_context_t *app_db,
                                                            title_id);
     if (duplicate >= 0)
       remove_scan_candidate_at(candidates, candidate_count, duplicate);
+    // An offline .pkg must not refresh the entry: auto-remove timers apply.
+    if (!path_exists(package))
+      continue;
     sm_pkg_info_t metadata;
     if (!directory_has_game_executable(cache) ||
         !sm_pkg_read_directory_metadata(cache, &metadata) ||
@@ -1500,6 +1517,7 @@ int collect_scan_candidates(scan_candidate_t *candidates, int max_candidates,
       .blocked_ppsa_titles_ready = blocked_ppsa_titles_ready,
   };
   repair_backport_permissions_for_scan_root(DEFAULT_BACKPORT_SCAN_PATH);
+  sm_kraken_auto_begin_pass();
   for (int i = 0; i < get_scan_path_count(); i++) {
     if (should_stop_requested() || runtime_sleep_mode_active())
       break;
@@ -1519,6 +1537,9 @@ int collect_scan_candidates(scan_candidate_t *candidates, int max_candidates,
       g_scan_workspace.discovered_param_roots, &discovered_param_root_count,
       unstable_found_out);
   collect_registered_kraken_games(&app_db, candidates, &candidate_count);
+  sm_kraken_auto_end_pass(!(unstable_found_out && *unstable_found_out) &&
+                          !should_stop_requested() &&
+                          !runtime_sleep_mode_active());
 
   uninstall_blocked_ppsa_titles(&blocked_ppsa_titles,
                                 blocked_ppsa_titles_ready);

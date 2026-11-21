@@ -6,7 +6,16 @@ python3 tools/test_shellcore.py --sanitize
 python3 tools/test_scan_permissions.py
 python3 tools/test_shellcore_launch.py --sanitize
 python3 tools/test_sandbox_cleanup.py
+python3 tools/test_unimount_logic.py --sanitize
 ```
+
+The UniMount logic test compiles `src/sm_unimount_logic.c` with the host
+json-c (`libjson-c-dev`, found through `pkg-config`). It covers Kraken Mount
+detection, quit outcomes, legacy-mount matching, adoption rules, the ownership
+ledger, the compatible listener's request parsing, routing and redirect, the
+automatic-mount failure ledger and decisions, and AMPR-emu-NG selection and
+replacement rules. The runtime config test also checks the `[compat]` and
+`[kraken]` settings.
 
 The config test compiles the production implementation with host stubs for
 logging, localization and backend names. It checks concurrent initialization,

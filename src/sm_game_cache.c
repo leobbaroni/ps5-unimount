@@ -9,6 +9,7 @@
 #include "sm_image_cache.h"
 #include "sm_image_index.h"
 #include "sm_install_queue.h"
+#include "sm_kraken.h"
 #include "sm_limits.h"
 #include "sm_log.h"
 #include "sm_path_utils.h"
@@ -28,6 +29,10 @@ static struct GameCache g_game_cache[MAX_PENDING];
 static pthread_mutex_t g_game_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool game_cache_source_exists(const struct GameCache *entry) {
+  // A Kraken cache under /data always exists; its source is the .pkg.
+  char package[MAX_PATH];
+  if (entry->path[0] != '\0' && sm_kraken_is_cache(entry->path))
+    return sm_kraken_source(entry->path, package) && path_exists(package);
   if (entry->path[0] != '\0' && path_exists(entry->path))
     return true;
 

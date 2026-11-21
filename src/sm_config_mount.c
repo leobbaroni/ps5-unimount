@@ -189,6 +189,10 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
                 sizeof(state->cfg.emulators_path));
   (void)strlcpy(state->cfg.ampr_update_url, DEFAULT_AMPR_UPDATE_URL,
                 sizeof(state->cfg.ampr_update_url));
+  state->cfg.compat_kraken_api_enabled = true;
+  state->cfg.compat_kraken_api_port = DEFAULT_COMPAT_KRAKEN_API_PORT;
+  state->cfg.kraken_auto_mount_enabled = true;
+  state->cfg.kraken_inject_ampr_enabled = true;
   state->cfg.scan_depth = DEFAULT_SCAN_DEPTH;
   state->cfg.scan_interval_us = DEFAULT_SCAN_INTERVAL_US;
   state->cfg.stability_wait_seconds = DEFAULT_STABILITY_WAIT_SECONDS;
@@ -1242,6 +1246,32 @@ static config_load_status_t parse_runtime_config_state(runtime_config_state_t *s
       continue;
     }
 
+    bool *unimount_flag =
+        strcasecmp(key, "compat_kraken_api") == 0 ? &state->cfg.compat_kraken_api_enabled
+        : strcasecmp(key, "kraken_auto_mount") == 0 ? &state->cfg.kraken_auto_mount_enabled
+        : strcasecmp(key, "kraken_inject_ampr") == 0 ? &state->cfg.kraken_inject_ampr_enabled
+        : NULL;
+    if (unimount_flag) {
+      if (!parse_bool_ini(value, &bval)) {
+        invalid = true;
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      *unimount_flag = bval;
+      continue;
+    }
+
+    if (strcasecmp(key, "compat_kraken_api_port") == 0) {
+      if (!parse_u32_ini(value, &u32) || u32 == 0 || u32 > 65535u) {
+        invalid = true;
+        log_debug("  [CFG] invalid Kraken API port at line %d: %s=%s (range: 1..65535)",
+                  line_no, key, value);
+        continue;
+      }
+      state->cfg.compat_kraken_api_port = u32;
+      continue;
+    }
+
     if (strcasecmp(key, "fan_target_temperature") == 0) {
       if (strcasecmp(value, "system") == 0 ||
           strcasecmp(value, "auto") == 0) {
@@ -1454,6 +1484,12 @@ static config_load_status_t parse_runtime_config_state(runtime_config_state_t *s
             state->cfg.md_sector_ufs, state->cfg.scan_interval_us / 1000000u,
             state->cfg.stability_wait_seconds, state->scan_path_count,
             image_rule_count);
+  log_debug("  [CFG] loaded: compat_kraken_api=%d compat_kraken_api_port=%u "
+            "kraken_auto_mount=%d kraken_inject_ampr=%d",
+            state->cfg.compat_kraken_api_enabled ? 1 : 0,
+            state->cfg.compat_kraken_api_port,
+            state->cfg.kraken_auto_mount_enabled ? 1 : 0,
+            state->cfg.kraken_inject_ampr_enabled ? 1 : 0);
 
   return CONFIG_LOAD_OK;
 }

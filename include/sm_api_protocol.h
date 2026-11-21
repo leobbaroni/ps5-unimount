@@ -3,6 +3,7 @@
 
 #define SM_API_DEFAULT_BIND_ADDRESS "0.0.0.0"
 #define SM_API_DEFAULT_PORT 10101u
+#define DEFAULT_COMPAT_KRAKEN_API_PORT 8097u
 #define SM_API_VERSION 1u
 #define SM_API_MAX_HTTP_HEADER_SIZE 8192u
 #define SM_API_MAX_JSON_BODY_SIZE 4096u
@@ -50,5 +51,6 @@
 #define SM_API_ROUTE_PACKAGE_STREAM "/api/v1/packages/stream"
 #define SM_API_ROUTE_PACKAGE_RANGE "/api/v1/packages/stream/request"
 #define SM_API_ROUTE_PACKAGE_CHUNK "/api/v1/packages/stream/chunk"
+#define SM_API_ROUTE_OWNERSHIP "/api/v1/ownership"
 
 #endif

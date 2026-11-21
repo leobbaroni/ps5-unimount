@@ -46,6 +46,7 @@ device.
 | --- | --- | --- |
 | `/` | GET | Serve `/data/shadowmount/index.html`, or the embedded page when it is absent |
 | `/api/v1/version` | `{}` | API and ShadowMount versions plus capabilities |
+| `/api/v1/ownership` | GET, or POST `{}` | UniMount ownership: ledger, Kraken Mount takeover, compatible listener, automatic PKG mounting |
 | `/api/v1/storage` | `{}` or `{"path":"smb://NAS"}` | Local storage listing and active SMB destinations, or capacity for one SMB path |
 | `/api/v1/storage/eject` | `{"path":"/mnt/usb0","source":"/dev/da1p1","mount_id":"1122334455667788"}` | Safely unmount an external USB drive; returns an asynchronous storage job |
 | `/api/v1/images` | `{}` | Complete image snapshot |
@@ -188,9 +189,89 @@ A successful version response has this shape:
   "status": 0,
   "api_version": 1,
   "shadowmount_version": "1.7",
-  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan"]
+  "product": "UniMount",
+  "unimount_version": "0.1.0",
+  "kraken_mount_version": "0.3.0",
+  "kraken_mount_revision": "e1e7845",
+  "capabilities": ["web_ui", "storage_space", "list_images", "list_games", "game_info", "game_data_sizes", "game_icon", "mount_game", "unmount_game", "uninstall_game", "uninstall_game_content", "move_game_source", "copy_game_source", "delete_game_source", "unpack_game_image", "storage_job_status", "storage_job_cancel", "list_manual_sources", "add_manual_source", "remove_manual_source", "manage_settings", "read_debug_log", "read_kernel_log", "rescan", "ownership"]
 }
 ```
+
+`product` and `unimount_version` (from the root `VERSION` file) identify the
+UniMount build; `shadowmount_version` keeps its meaning (the ShadowMountPlus
+engine tag). `kraken_mount_version` is the Kraken Mount release the bundled
+Kraken engine corresponds to and `kraken_mount_revision` its short commit.
+
+## UniMount ownership
+
+`GET /api/v1/ownership` (or `POST` with `{}`) reports who owns mounting on the
+console. See `docs/unimount-ownership.md` for the startup order and rules.
+
+```json
+{
+  "status": 0,
+  "product": "UniMount",
+  "version": "0.1.0",
+  "pid": 85,
+  "started": 1763700000,
+  "ownership_ready": true,
+  "previous_unclean": false,
+  "previous_pid": 0,
+  "kraken_takeover": {"state": "taken_over", "version": "0.3.1"},
+  "legacy_mounts": {"released": 2, "left": 0},
+  "compat_listener": {"enabled": true, "port": 8097, "bound": true},
+  "auto_mount": {
+    "enabled": true,
+    "queued": 1,
+    "building": "/mnt/usb0/homebrew/Game.pkg",
+    "failed": [{"path": "/mnt/usb0/homebrew/Broken.pkg", "error": "kraken_base_invalid"}]
+  }
+}
+```
+
+- `started`: Unix seconds when the ownership ledger was written (0 before).
+- `previous_unclean`: `/data/shadowmount/owner.json` from an earlier instance
+  was still present at startup (that instance did not exit cleanly);
+  `previous_pid` is its process id when readable.
+- `kraken_takeover.state`: `pending` (startup has not reached the takeover),
+  `absent` (no Kraken Mount on port 8097), `taken_over` (Kraken Mount accepted
+  `POST /api/quit` or stopped while UniMount waited), `waiting_for_game`
+  (Kraken Mount answered 409 because a game runs; scanning and mounting wait),
+  `waiting_for_quit` (Kraken Mount gave another answer, e.g. an old build
+  without `/api/quit`; UniMount keeps asking and does not mount meanwhile).
+  `version` is the Kraken Mount version that answered, else `null`.
+- `legacy_mounts`: Kraken Mount title mounts
+  (`nullfs /data/krakenmount/caches/<TID>` on `/system_ex/app/<TID>`)
+  released since startup, and those still left (busy or a game is live).
+- `compat_listener`: `[compat] kraken_api`, its port and whether it is bound.
+- `auto_mount`: `[kraken] auto_mount`, packages waiting for a job, the package
+  being built (or `null`), and remembered failures keyed by path (a failure is
+  retried when the file's size or mtime changes, after an explicit
+  `/api/v1/packages/mount` of the same file, or after a restart).
+
+## Kraken Mount compatible API (port 8097)
+
+While `[compat] kraken_api=on` (default), UniMount listens on
+`[compat] kraken_api_port` (default 8097) with the subset of Kraken Mount's
+web API that other tools use:
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/state` | 200, Kraken Mount's `/api/state` schema plus `"unimount": "<version>"` |
+| `POST /api/rescan` | 204; queues the same full rescan as `/api/v1/scan` |
+| `POST /api/quit` | Always 409 with a text body: UniMount owns mounting |
+| `GET /` | 302 to `http://<request host>:<api_port>/` (the UniMount UI) |
+| anything else | 404 `not found` |
+
+Requests are capped at 16 KiB (431 head too large, 413 body too large, 400
+malformed). `games` lists every library title backed by a Kraken PKG cache
+(`status: "ready"`, `path` = the `.pkg`) followed by `.pkg` files the automatic
+mount has queued (`pending`), is building (`building`), skipped because another
+source provides the title (`duplicate`) or failed (`error` with the reason).
+Fields UniMount cannot know keep Kraken's types: `packing`, `cache_built`,
+`backport`, `playgo` are `null`, `cache_size` is 0, `log` is empty,
+`waiting` is `null`. `version` is the Kraken Mount release of the bundled
+engine (`0.3.0`).
 
 List responses contain `count` and the complete `images` or `games` array.
 Homebrew IDs contain four uppercase ASCII letters and five digits, excluding
@@ -528,6 +609,16 @@ returns HTTP 202 with a storage job (`operation=mount_package`). It validates
 the selected package and registers it from its current path. Package mounts
 are one-shot jobs. The registered source is retained through `mount.lnk` and
 its cache marker. Existing `manual.lst` PKG entries are ignored by the scanner.
+With `[kraken] auto_mount=on` (default) the scanner also starts this job by
+itself for stable plaintext debug base PKGs found in the scan roots; see
+`docs/unimount-ownership.md`. An explicit request for a file clears the
+automatic mount's remembered failure for it. A title that real Kraken Mount
+registered (its `/data/krakenmount/caches/<TID>/.done`, no `mount.lnk`, no
+installed `app.pkg`) is adopted instead of failing with
+`kraken_title_conflict`; while Kraken Mount's own `/system_ex/app/<TID>` mount
+is still in use the job stops with `kraken_legacy_mount_busy` (HTTP 409).
+A Kraken-cache-backed title counts as present only while its `.pkg` exists, so
+`[library] remove_missing` treats a removed `.pkg` like a removed image.
 
 A local debug LIH targeting a Kraken-mounted game can have `mount_patch=true`
 and `mountable=true`. Send its path to the same endpoint to start a

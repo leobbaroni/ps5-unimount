@@ -1,8 +1,8 @@
 static const char *const g_en_us[SM_L10N_COUNT] = {
     [SM_L10N_ACTION_DEBUG_SETTINGS] = "Go to Debug Settings",
-    [SM_L10N_STARTUP] = "ShadowMount+ v%s\n© Drakmor and Community",
+    [SM_L10N_STARTUP] = "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community",
     [SM_L10N_STARTUP_WEB] =
-        "ShadowMount+ v%s\n© Drakmor and Community\nControl: http://%s:%u",
+        "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community\nControl: http://%s:%u",
     [SM_L10N_RECURSIVE_SCAN_DEPRECATED] =
         "ShadowMount+: recursive_scan=1 is deprecated, using scan_depth=2.",
     [SM_L10N_SCAN_DEPTH_ENABLED] = "ShadowMount+: scan depth %u enabled.",
@@ -63,4 +63,6 @@ static const char *const g_en_us[SM_L10N_COUNT] = {
     [SM_L10N_GAME_CRASHED] = "Game %s crashed.",
     [SM_L10N_GAME_ERROR] = "Error in game %s:\n%s",
     [SM_L10N_USB_CONNECTED] = "External drive %s connected",
+    [SM_L10N_KRAKEN_TAKEOVER_WAITING] =
+        "UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped.",
 };

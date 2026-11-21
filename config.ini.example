@@ -80,6 +80,23 @@ version = 2
 # Check for AMPR 30 seconds after startup, then every four hours; defer during games.
 # auto_update_ampr = off
 # ampr_update_url = https://github.com/drakmor/ampr_emu/releases/latest/download/libSceAmpr.sprx
+# libSceAmpr.sprx from ampr-emu-ng in a game fakelib is never replaced by an upstream
+# ampr_emu from path (or the other way round). A shared ampr-emu-ng may be placed in
+# <path>/ampr-emu-ng/libSceAmpr.sprx; it is preferred for Kraken PKGs and zstd folders.
+
+[kraken]
+# Build and register stable plaintext debug base PKGs found in the scan roots automatically
+# (the same job as the web UI's PKG mount). Retail, encrypted and PS4 PKGs are ignored.
+# A failing PKG is retried when the file changes, on an explicit mount, or after restart.
+# auto_mount = on
+# Folder games with ampr_zstd.index only run with AMPR-emu-NG: put one into their fakelib.
+# inject_ampr = on
+
+[compat]
+# Kraken Mount compatible API (GET /api/state, POST /api/rescan) for tools such as Orbit
+# Store. It also keeps a later-started Kraken Mount from taking over (its quit gets 409).
+# kraken_api = on
+# kraken_api_port = 8097
 
 [fan]
 # system: keep the system target; 50..91: apply a temperature target at game launch.
