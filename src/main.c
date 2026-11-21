@@ -878,6 +878,9 @@ int main(void) {
     printf("[STOP] Could not clear %s: %s\n", KILL_FILE, strerror(errno));
   }
 
+  // A line logged while waiting for a game has opened the predecessor's log.
+  // Close it, or this run would keep writing into the rotated file.
+  sm_log_shutdown();
   (void)unlink(LOG_FILE_PREV);
   (void)rename(LOG_FILE, LOG_FILE_PREV);
   if (!ensure_runtime_config_file() || !sm_config_prepare_files() || !load_runtime_config()) {
