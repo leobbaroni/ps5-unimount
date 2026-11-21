@@ -14,9 +14,11 @@ python3 tools/test_game_control.py --sanitize
 
 The UniMount logic test compiles `src/sm_unimount_logic.c` with the host
 json-c (`libjson-c-dev`, found through `pkg-config`). It covers Kraken Mount
-detection, quit outcomes, legacy-mount matching, adoption rules, the ownership
+detection (the full reply classification matrix: complete, body-prefix,
+truncated, empty, 5xx, non-HTTP and other-server replies), quit outcomes, legacy-mount matching, adoption rules, the ownership
 ledger, the compatible listener's request parsing, routing and redirect, the
-automatic-mount failure ledger and decisions, and AMPR-emu-NG selection and
+automatic-mount failure ledger and decisions (a user cancel is remembered,
+other cancels are retried), and AMPR-emu-NG selection and
 replacement rules. The runtime config test also checks the `[compat]` and
 `[kraken]` settings and `[api] allow_launch` (default, on/off, invalid value,
 legacy `api_allow_launch` migration).
@@ -45,12 +47,16 @@ The scan permission test checks inaccessible roots and descendants in watcher
 discovery while keeping content scans and real I/O failures strict.
 
 The exec permission test checks that game executables gain only their missing
-execute bits, and that directories and symlink targets are left unchanged.
+execute bits, that directories and symlink targets are left unchanged, and
+that a failed chmod is remembered per file state (dev, inode, mode, ctime).
 
 The diagnostics test compiles `src/sm_diag_core.c` with json-c. It covers the
 launch timeline and outcomes (no `running` without a confirmed process, early
-exit, `LAUNCH_FAILED`, handoff, crash, persistence round trip), the console
-error-history parser on real samples (BOM, signed codes to hex), every
+exit, `LAUNCH_FAILED`, handoff, crash, persistence round trip, restored
+records never absorbing a new process, unmanaged vs. managed mount failures),
+the console error-history parser on real samples (BOM, signed codes to hex),
+newest-512 selection independent of directory order, filesystem availability
+without `vfs.conflist`, every
 classification rule plus an unknown code, `param.json` firmware comparison,
 PS5 Payload Manager autoload/meta parsing, kernel-log line selection and the
 AMPR runtime version marker of the bundled runtime.

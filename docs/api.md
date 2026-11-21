@@ -225,13 +225,14 @@ console. See `docs/unimount-ownership.md` for the startup order and rules.
   "ownership_ready": true,
   "previous_unclean": false,
   "previous_pid": 0,
-  "kraken_takeover": {"state": "taken_over", "version": "0.3.1"},
+  "kraken_takeover": {"state": "taken_over", "version": "0.3.1", "detail": null},
   "legacy_mounts": {"released": 2, "left": 0},
   "compat_listener": {"enabled": true, "port": 8097, "bound": true},
   "auto_mount": {
     "enabled": true,
     "queued": 1,
     "building": "/mnt/usb0/homebrew/Game.pkg",
+    "overflow": 0,
     "failed": [{"path": "/mnt/usb0/homebrew/Broken.pkg", "error": "kraken_base_invalid"}]
   }
 }
@@ -246,8 +247,13 @@ console. See `docs/unimount-ownership.md` for the startup order and rules.
   `POST /api/quit` or stopped while UniMount waited), `waiting_for_game`
   (Kraken Mount answered 409 because a game runs; scanning and mounting wait),
   `waiting_for_quit` (Kraken Mount gave another answer, e.g. an old build
-  without `/api/quit`; UniMount keeps asking and does not mount meanwhile).
-  `version` is the Kraken Mount version that answered, else `null`.
+  without `/api/quit`, or accepted quit but still listened after 15 s;
+  UniMount keeps asking and does not mount meanwhile), `waiting_for_reply`
+  (something listens on port 8097 but its reply was not conclusive - no
+  reply, reset, cut-off, 5xx; UniMount asks again with backoff and does not
+  mount meanwhile). `version` is the Kraken Mount version that answered, else
+  `null`. `detail` is the reason for `waiting_for_reply`, or why a listener
+  was judged not to be Kraken Mount (`absent`), else `null`.
 - `legacy_mounts`: Kraken Mount title mounts
   (`nullfs /data/krakenmount/caches/<TID>` on `/system_ex/app/<TID>`)
   released since startup, and those still left (busy or a game is live).
@@ -255,7 +261,10 @@ console. See `docs/unimount-ownership.md` for the startup order and rules.
 - `auto_mount`: `[kraken] auto_mount`, packages waiting for a job, the package
   being built (or `null`), and remembered failures keyed by path (a failure is
   retried when the file's size or mtime changes, after an explicit
-  `/api/v1/packages/mount` of the same file, or after a restart).
+  `/api/v1/packages/mount` of the same file, or after a restart). A user
+  cancel of an automatic build is remembered as `cancelled_by_user`.
+  `overflow` counts `.pkg` files the last complete scan pass could not track
+  because 64 were already tracked (logged once).
 
 ## Kraken Mount compatible API (port 8097)
 

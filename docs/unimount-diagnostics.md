@@ -17,6 +17,13 @@ response sent to ShellCore. All probing (kernel log, error-history files,
 mount table, app.db, `param.json`) runs on the diagnostics thread. If the queue
 is full the event is dropped and `[DIAG] dropped N launch event(s)` is logged.
 
+At shutdown `sm_diag_stop()` runs after the ShellCore hooks, the ShellCore
+service and the lifecycle watcher have stopped and before mdbg, app.db and the
+log are shut down: new events are dropped, the thread processes what is
+queued, writes `launches.json` once more and is joined. If the thread cannot
+be created at all, the store is reported unavailable at once (library items
+get `last_launch: null` without waiting).
+
 ## Where events come from
 
 | Event | Source in UniMount |
@@ -31,7 +38,11 @@ is full the event is dropped and `[DIAG] dropped N launch event(s)` is logged.
 
 Only valid game title IDs are recorded (`NPXS` system apps are not). Titles
 that are not managed by UniMount (installed PKGs) are recorded too, with
-`managed=false` and `mounted.state=not_observed`.
+`managed=false` and `mounted.state=not_observed`. "Not managed" is decided
+only from the launch mount's mount-link lookup (layer `mount_link`, ENOENT) or
+an unsupported title id (no layer, EINVAL). ENOENT from any other layer - for
+example `kraken_source` when a Kraken title's `.pkg` is offline - is a managed
+`mount_failed` with its diagnosis.
 
 A title that was only mounted or registered has no record: nothing launched
 it. Its library item reports `last_launch: null`.
@@ -93,8 +104,9 @@ plus `0x%08X`), `messageBuffer`, `titleId`, `displayVersion`, `tick`,
 `__appId`, the file name and mtime are kept as written. `tick` is reported raw
 and not converted.
 
-`GET /api/v1/diagnostics/errors` lists the whole directory newest first by
-file mtime; unreadable or garbled files appear with `parsed=false`.
+`GET /api/v1/diagnostics/errors` lists the directory newest first by file
+mtime (the newest 512 files whatever the directory order; `total_files` is
+capped at 512); unreadable or garbled files appear with `parsed=false`.
 
 ## Kernel log
 
@@ -161,9 +173,12 @@ PPSA24913 patch in upstream issue #197; issue #227 shows `0x1120…` = 11.20).
 `kernel_get_fw_version()` uses the same BCD encoding in bits 31..16 (13.60 is
 `0x1360xxxx`, see `get_firmware_version_string()` in `main.c`). Packed BCD
 compares in decimal order as an integer, so `0x1360 > 0x1340` means "needs
-13.60, console has 13.40". Only major.minor is compared. The file is read from
-`/system_ex/app/<TITLE>/sce_sys/param.json` right after a successful launch
-mount.
+13.60, console has 13.40". Only major.minor is compared. The file is read
+right after a successful launch mount from the title's source
+(`<mount.lnk target>/sce_sys/param.json`), never through the live
+`/system_ex/app/<TITLE>` mount, so an open file cannot make a non-forced
+unmount fail with EBUSY during the launch window. Titles without a
+`mount.lnk` (not managed) fall back to `/system_ex/app/<TITLE>/sce_sys/param.json`.
 
 ## System report
 
@@ -183,12 +198,20 @@ mount.
   reads `/data/pldmgr/payloads/<slot>/meta.json` and reports its `version`
   with `version_source: "pldmgr_meta"`. An autoload entry shows what PLDMGR is
   configured to load, not what is running.
-- `mechanisms`: `/dev/lvdctl` and `/dev/mdctl` are opened read/write and closed;
-  nullfs/unionfs/pfs are looked up in `vfs.conflist` (or proven by an existing
-  mount); PFS images need LVD; Kraken direct PKG mounting needs nullfs and
-  reports which AMPR runtime a launch would install (`shared`
-  `<emulators path>/libSceAmpr.sprx` or `bundled`) and the version string the
-  runtime embeds (`ampr-emu-ng 0.4.1`).
+- `mechanisms`: `/dev/lvdctl` and `/dev/mdctl` are opened read/write and closed.
+  nullfs/unionfs/pfs use `vfs.conflist` when it exists; on the PS5 it does not
+  (ENOENT), so availability comes from evidence (`sm_diag_fs_availability()`):
+  a mount of that type in the mount table now is `available: true`
+  ("N <fs> mount(s) present"); otherwise a mount of that type UniMount
+  completed earlier in this process (a fakelib unionfs overlay, a PFS image)
+  is `true` ("mounted successfully this session"); otherwise `null` ("not yet
+  observed on this boot"). Without the kernel list it is never `false`. PFS
+  images also need LVD. Kraken direct PKG mounting needs nullfs and reports
+  which AMPR runtime a launch would install, with the same selection as the
+  launch path: `shared` `<emulators path>/ampr-emu-ng/libSceAmpr.sprx`, else
+  `shared` `<emulators path>/libSceAmpr.sprx` (both must pass the same
+  validation), else `bundled`, and the version string the runtime embeds
+  (`ampr-emu-ng 0.4.1`).
 - `limitations`, for example `native_debug_pkg_unavailable` above 11.60:
   kstuff-lite's `ps5-kstuff/uelf/fpkg.c` returns early with
   `if(FWVER > 0x1160) return NULL;`, so plaintext debug packages cannot be
@@ -207,12 +230,14 @@ error_window_seconds = 120    # 10..3600
 ## Persistence
 
 The last 64 records are kept in memory and saved to
-`/data/shadowmount/launches.json` (temporary file, fsync, rename) at most every
-2 s while something changed, from the diagnostics thread. They are restored on
+`/data/shadowmount/launches.json` (unique `mkstemp` temporary file, fsync,
+rename; the file is read with `O_NOFOLLOW`) at most every 2 s while something
+changed, from the diagnostics thread, and once more at shutdown. They are restored on
 the first diagnostics use after start. A record that was still being observed
 when UniMount stopped keeps its last observed state and gets
-`observation_interrupted: true`; it is not re-evaluated. Monotonic timestamps
-(`mono_us`) only compare within one UniMount run.
+`observation_interrupted: true`; it is not re-evaluated and never absorbs a
+process of the current run. Monotonic timestamps (`mono_us`) only compare
+within one UniMount run.
 
 ## Honest limits
 

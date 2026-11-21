@@ -457,9 +457,14 @@ static void apply_mount_result(sm_diag_record_t *rec,
   copy_text(rec->mount_layer, sizeof(rec->mount_layer), input->layer);
   int64_t at = input->wall_ms;
   uint64_t mono = input->mono_us;
-  // Source: sm_shellcore_service.c handle_launch_request(): ENOENT/EINVAL
-  // mean "not managed here" (stock title), not a mount failure.
-  if (input->status == ENOENT || input->status == EINVAL) {
+  // Source: sm_shellcore_service.c mount_managed_title_runtime(): only a
+  // missing mount link (layer "mount_link", ENOENT) or an unsupported title
+  // id (no layer, EINVAL) means "not managed here" (stock title). ENOENT from
+  // any other layer, e.g. an offline Kraken .pkg, is a managed mount failure.
+  bool unmanaged =
+      (input->status == ENOENT && strcmp(input->layer, "mount_link") == 0) ||
+      (input->status == EINVAL && input->layer[0] == '\0');
+  if (unmanaged) {
     rec->managed = 0;
     sm_diag_record_set_stage(rec, SM_DIAG_STAGE_MOUNTED, SM_DIAG_NOT_OBSERVED,
                              0, 0,
@@ -543,7 +548,10 @@ sm_diag_record_t *sm_diag_store_apply(sm_diag_store_t *store,
       // process itself; bind it to that record instead of hiding it.
       sm_diag_record_t *latest = sm_diag_store_latest_for_title(store, input->title_id);
       uint64_t window = (uint64_t)policy->launch_retry_window_seconds * 1000000u;
-      if (latest && latest->pid <= 0 && !latest->interrupted &&
+      // A record restored from launches.json belongs to an earlier process
+      // and its monotonic times are not comparable.
+      if (latest && !latest->restored && latest->pid <= 0 &&
+          !latest->interrupted &&
           latest->outcome == SM_DIAG_OUTCOME_SPAWN_FAILED &&
           mono >= latest->created_mono_us &&
           mono - latest->created_mono_us < 2u * window) {
@@ -1165,6 +1173,31 @@ static struct json_object *parse_json_text(const char *data, size_t size) {
   return object;
 }
 
+int sm_diag_history_compare(const void *a, const void *b) {
+  const sm_diag_history_entry_t *left = a;
+  const sm_diag_history_entry_t *right = b;
+  if (left->mtime != right->mtime)
+    return left->mtime < right->mtime ? 1 : -1;
+  return -strcmp(left->name, right->name);
+}
+
+void sm_diag_history_keep_newest(sm_diag_history_entry_t *entries,
+                                 size_t *count, size_t capacity,
+                                 const sm_diag_history_entry_t *candidate) {
+  if (capacity == 0)
+    return;
+  if (*count < capacity) {
+    entries[(*count)++] = *candidate;
+    return;
+  }
+  size_t oldest = 0;
+  for (size_t i = 1; i < *count; ++i)
+    if (sm_diag_history_compare(&entries[i], &entries[oldest]) > 0)
+      oldest = i;
+  if (sm_diag_history_compare(candidate, &entries[oldest]) < 0)
+    entries[oldest] = *candidate;
+}
+
 bool sm_diag_parse_native_error(const char *data, size_t size,
                                 sm_diag_native_error_t *out) {
   char file[SM_DIAG_FILE_NAME_SIZE];
@@ -1604,6 +1637,29 @@ bool sm_diag_pldmgr_parse_meta(const char *data, size_t size,
 }
 
 // --- AMPR runtime ---
+
+int sm_diag_fs_availability(const char *name, int registered, size_t mounted,
+                            bool seen_ok, char *reason, size_t reason_size) {
+  if (registered > 0) {
+    snprintf(reason, reason_size, "%s registered in the kernel; %zu mount(s) present",
+             name, mounted);
+    return 1;
+  }
+  if (mounted > 0) {
+    snprintf(reason, reason_size, "%zu %s mount(s) present", mounted, name);
+    return 1;
+  }
+  if (seen_ok) {
+    snprintf(reason, reason_size, "mounted successfully this session");
+    return 1;
+  }
+  if (registered == 0) {
+    snprintf(reason, reason_size, "%s is not registered in the kernel", name);
+    return 0;
+  }
+  snprintf(reason, reason_size, "not yet observed on this boot");
+  return -1;
+}
 
 bool sm_diag_ampr_version(const unsigned char *data, size_t size,
                           char out[32]) {

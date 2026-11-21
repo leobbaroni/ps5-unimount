@@ -298,6 +298,21 @@ const char *sm_diag_native_code_category(uint32_t code);
 void sm_diag_format_code_hex(int32_t code, char out[11]);
 // Tolerant parser: BOM, missing fields and garbage are accepted; returns
 // false only when the text is not a JSON object.
+// One file of the console error history directory.
+typedef struct {
+  char name[SM_DIAG_FILE_NAME_SIZE];
+  int64_t mtime;
+  int64_t size;
+} sm_diag_history_entry_t;
+
+// qsort comparator: newest mtime first, then name descending.
+int sm_diag_history_compare(const void *a, const void *b);
+// Adds candidate to entries (at most capacity, any order) so that the list
+// always holds the newest entries seen, whatever the readdir order.
+void sm_diag_history_keep_newest(sm_diag_history_entry_t *entries,
+                                 size_t *count, size_t capacity,
+                                 const sm_diag_history_entry_t *candidate);
+
 bool sm_diag_parse_native_error(const char *data, size_t size,
                                 sm_diag_native_error_t *out);
 struct json_object *sm_diag_native_error_to_json(
@@ -354,6 +369,14 @@ const char *sm_diag_kstuff_implementation(const char *text);
 // --- AMPR runtime ---
 // Find the "ampr-emu-ng <version>" identification string embedded in an AMPR
 // runtime binary.
+// Filesystem availability for /api/v1/system. registered: 1/0 from the
+// kernel's vfs.conflist, -1 when that list is unavailable (it does not exist
+// on the PS5). mounted: mounts of that type present now. seen_ok: UniMount
+// mounted one successfully earlier in this process. Returns 1/0/-1 (never 0
+// without the kernel list saying so) and a short factual reason.
+int sm_diag_fs_availability(const char *name, int registered, size_t mounted,
+                            bool seen_ok, char *reason, size_t reason_size);
+
 bool sm_diag_ampr_version(const unsigned char *data, size_t size,
                           char out[32]);
 

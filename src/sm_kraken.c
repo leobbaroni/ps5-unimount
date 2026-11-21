@@ -1583,16 +1583,15 @@ bool sm_kraken_runtime_selection(const char *emulators_path,
                                  unsigned char **owned) {
   *owned = NULL;
   shared_path[0] = '\0';
-  if (emulators_path && *emulators_path &&
-      join_path(emulators_path, KRAKEN_AMPR_NAME, shared_path)) {
-    size_t shared_size = 0;
-    unsigned char *shared = read_shared_ampr(shared_path, &shared_size);
-    if (shared) {
-      *owned = shared;
-      *data = shared;
-      *size = shared_size;
-      return true;
-    }
+  // Same selection as install_ampr_file(): <emulators>/ampr-emu-ng first.
+  size_t shared_size = 0;
+  unsigned char *shared =
+      load_shared_ampr(emulators_path, &shared_size, shared_path);
+  if (shared) {
+    *owned = shared;
+    *data = shared;
+    *size = shared_size;
+    return true;
   }
   shared_path[0] = '\0';
   *data = sm_kraken_runtime_start;

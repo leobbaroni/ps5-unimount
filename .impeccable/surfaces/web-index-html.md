@@ -49,14 +49,18 @@ SIGNATURE: Moving focus along the shelf cross-fades the full-bleed art and re-st
 tracker for the newly focused game. Motion grammar: one 240ms ease-out for focus and cross-fade;
 nothing else moves; reduced motion makes it instant.
 
-FORM: Full-bleed media surface with a cover shelf; third of the dealt challengers, steered by the
-owner. seed: none (unavailable)
+FORM: Full-bleed media surface with a cover shelf, pinned by the owner. seed: none (pinned) —
+"this would be my favourite one but still needs to look more professional looking: squareish
+instead of circles everywhere. I like using the videogame images/cover/background", then
+"Cover shelf only". (The first hand was dealt under Impeccable 4.1.1, before seed references
+existed.)
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 
 ## Unresolved
 
-- The PS5 browser's engine level and controller input model are unverified. Until checked on the
-  console, the interface must work by pointer alone and by sequential/arrow-key focus alone, and
-  controller hints appear only once a controller input has actually been observed.
-- A key-art endpoint does not exist yet; covers come from the existing icon endpoint until it does.
+- Measured on the console (firmware 13.60 browser): WebKit 605.1.15 at Safari 17 level, viewport
+  1540x700 at devicePixelRatio 1, no `backdrop-filter`, no Gamepad API. The D-pad arrives as arrow
+  keys, cross as a pointer click, circle as Escape (the system then closes the browser). Square,
+  triangle, L1, R1 and Options were not measured.
+- 1540x700 is therefore the primary viewport; 1920x1080 and 1280x720 are secondary.

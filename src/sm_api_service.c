@@ -47,6 +47,7 @@
 #include "sm_title_state.h"
 #include "sm_types.h"
 #include "sm_unimount.h"
+#include "sm_unimount_logic.h"
 #include "sm_smb.h"
 #include "sm_vfs.h"
 #include "sm_usb.h"
@@ -143,6 +144,8 @@ typedef struct {
   pthread_cond_t cond;
   bool accepting;
   bool cancel_requested;
+  bool cancel_by_user;  // POST /api/v1/storage/jobs/<id>/cancel
+  bool automatic;       // started by the automatic PKG mount
   uint64_t next_id;
   uint64_t id;
   game_storage_operation_t operation;
@@ -4239,6 +4242,17 @@ static bool storage_job_cancelled(void *ctx) {
   return cancelled;
 }
 
+// Automatic Kraken jobs also stop as soon as a game becomes active.
+static bool kraken_job_cancelled(void *ctx) {
+  uint64_t job_id = (uint64_t)(uintptr_t)ctx;
+  pthread_mutex_lock(&g_storage_job.mutex);
+  bool cancelled = g_storage_job.id != job_id ||
+                   g_storage_job.cancel_requested;
+  bool automatic = g_storage_job.automatic;
+  pthread_mutex_unlock(&g_storage_job.mutex);
+  return cancelled || (automatic && sm_kraken_auto_game_active());
+}
+
 static void update_storage_job_progress(uint64_t bytes_delta,
                                         uint64_t files_delta, void *ctx) {
   uint64_t job_id = (uint64_t)(uintptr_t)ctx;
@@ -4634,7 +4648,7 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
   bool scanner = false, runtime = false;
   int status = error ? EBUSY : 0;
   void *ctx = (void *)(uintptr_t)job_id;
-  if (!status && storage_job_cancelled(ctx))
+  if (!status && kraken_job_cancelled(ctx))
     status = ECANCELED;
   if (!status && !(scanner = sm_scanner_try_begin_external_mutation())) {
     status = EBUSY;
@@ -4696,7 +4710,7 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
   if (!status) {
     bool rebuilt = false;
     sm_kraken_job_t job = {
-      .cancelled = storage_job_cancelled, .finalize = begin_storage_job_finalizing,
+      .cancelled = kraken_job_cancelled, .finalize = begin_storage_job_finalizing,
       .progress = update_kraken_job, .ctx = ctx, .fast = action == KRAKEN_FAST_PATCH,
       .rebuilt = &rebuilt,
     };
@@ -4735,8 +4749,21 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
   if (status)
     log_debug("  [KRAKEN] requested mount stopped: %s status=%d (%s)",
               source, status, operation_error_message(status, error));
+  // The automatic mount retries a cancel caused by a game, rest mode or
+  // shutdown, but not one the user asked for.
+  const char *auto_reason = error;
+  if (status == ECANCELED) {
+    pthread_mutex_lock(&g_storage_job.mutex);
+    bool by_user = g_storage_job.id == job_id && g_storage_job.cancel_by_user;
+    bool automatic = g_storage_job.id == job_id && g_storage_job.automatic;
+    pthread_mutex_unlock(&g_storage_job.mutex);
+    if (by_user && !should_stop_requested() && !runtime_sleep_mode_active())
+      auto_reason = SM_AUTO_REASON_USER_CANCELLED;
+    else if (automatic && sm_kraken_auto_game_active())
+      auto_reason = "game_active";
+  }
   finish_storage_job(job_id, status, false, error);
-  sm_kraken_auto_job_finished(source, status, error);
+  sm_kraken_auto_job_finished(source, status, auto_reason);
 }
 
 static void *storage_job_thread_main(void *arg) {
@@ -5016,13 +5043,13 @@ static void *storage_job_thread_main(void *arg) {
   return NULL;
 }
 
-static int launch_storage_job(const char *title_id,
-                              const game_source_info_t *source_info,
-                              const char *destination,
-                              game_storage_operation_t operation,
-                              bool delete_source,
-                              storage_job_snapshot_t *accepted_out,
-                              const char **error_out) {
+static int launch_storage_job_as(const char *title_id,
+                                 const game_source_info_t *source_info,
+                                 const char *destination,
+                                 game_storage_operation_t operation,
+                                 bool delete_source, bool automatic,
+                                 storage_job_snapshot_t *accepted_out,
+                                 const char **error_out) {
   pthread_mutex_lock(&g_storage_job.mutex);
   if (!g_storage_job.accepting || storage_job_is_active(g_storage_job.state) || g_storage_job.pkg_queue_running ||
       (operation == GAME_STORAGE_DELETE && !title_id[0] && g_storage_job.pkg_queue_count)) {
@@ -5036,6 +5063,8 @@ static int launch_storage_job(const char *title_id,
   if (job_id == 0)
     job_id = ++g_storage_job.next_id;
   g_storage_job.cancel_requested = false;
+  g_storage_job.cancel_by_user = false;
+  g_storage_job.automatic = automatic;
   g_storage_job.id = job_id;
   g_storage_job.title_name[0] = 0;
   g_storage_job.native_status = 0;
@@ -5091,6 +5120,17 @@ static int launch_storage_job(const char *title_id,
     return rc;
   }
   return 0;
+}
+
+static int launch_storage_job(const char *title_id,
+                              const game_source_info_t *source_info,
+                              const char *destination,
+                              game_storage_operation_t operation,
+                              bool delete_source,
+                              storage_job_snapshot_t *accepted_out,
+                              const char **error_out) {
+  return launch_storage_job_as(title_id, source_info, destination, operation,
+                               delete_source, false, accepted_out, error_out);
 }
 
 static void handle_storage_eject(struct MHD_Connection *connection,
@@ -5301,7 +5341,8 @@ int sm_api_service_start_kraken_mount(const char *path, const char **error_out) 
     return errno == EAGAIN ? EAGAIN : EINVAL;
   }
   const char *error = runtime_mutation_block_reason();
-  if (!error && sm_shellcore_title_is_protected(info.title_id))
+  if (!error && (sm_shellcore_title_is_protected(info.title_id) ||
+                 sm_kraken_auto_game_active()))
     error = "game_active";
   if (error) {
     *error_out = error;
@@ -5312,9 +5353,9 @@ int sm_api_service_start_kraken_mount(const char *path, const char **error_out) 
   };
   strlcpy(package.physical_path, source, sizeof(package.physical_path));
   storage_job_snapshot_t accepted;
-  return launch_storage_job(info.title_id, &package, "",
-                            GAME_STORAGE_MOUNT_PACKAGE, false, &accepted,
-                            error_out);
+  return launch_storage_job_as(info.title_id, &package, "",
+                               GAME_STORAGE_MOUNT_PACKAGE, false, true,
+                               &accepted, error_out);
 }
 
 static void handle_source_install(struct MHD_Connection *connection, struct json_object *request) {
@@ -6681,6 +6722,7 @@ static void handle_storage_job_cancel(struct MHD_Connection *connection,
     return;
   }
   g_storage_job.cancel_requested = true;
+  g_storage_job.cancel_by_user = true;
   if (g_storage_job.pkg_stream) sm_pkg_stream_stop(g_storage_job.pkg_stream);
   storage_job_snapshot_t snapshot;
   copy_storage_job_snapshot_locked(&snapshot);

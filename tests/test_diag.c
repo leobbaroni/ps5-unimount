@@ -138,6 +138,26 @@ static void test_launch_failed_is_spawn_failed(void) {
   sm_diag_record_t *next = launch(&store, 0, 40);
   assert(next != rec && next->id == rec->id + 1u);
   sm_diag_store_free(&store);
+
+  // A spawn_failed record restored from launches.json (an earlier process)
+  // never absorbs a new process, even with overlapping monotonic times.
+  assert(sm_diag_store_init(&store));
+  rec = launch(&store, 0, 0);
+  assert(apply(&store, event(SM_DIAG_EV_LAUNCH_FAILED, 1)) == rec);
+  evaluate(rec, 17.5);
+  assert(rec->outcome == SM_DIAG_OUTCOME_SPAWN_FAILED);
+  rec->restored = true;
+  sm_diag_record_t *process = start_process(&store, 4242, 18);
+  assert(process != rec && rec->pid <= 0 && process->pid == 4242);
+  assert(rec->outcome == SM_DIAG_OUTCOME_SPAWN_FAILED);
+  // Without the restored flag the same process revises the verdict.
+  sm_diag_store_free(&store);
+  assert(sm_diag_store_init(&store));
+  rec = launch(&store, 0, 0);
+  assert(apply(&store, event(SM_DIAG_EV_LAUNCH_FAILED, 1)) == rec);
+  evaluate(rec, 17.5);
+  assert(start_process(&store, 4242, 18) == rec);
+  sm_diag_store_free(&store);
 }
 
 static void test_running_then_exited_normally(void) {
@@ -212,10 +232,30 @@ static void test_mount_failure_and_unmanaged_titles(void) {
   assert(apply(&store, event(SM_DIAG_EV_LAUNCH_FAILED, 0.2)) == rec);
   assert(sm_diag_store_count(&store) == 1);
 
-  sm_diag_record_t *stock = launch(&store, ENOENT, 100);
+  sm_diag_input_t stock_input = event(SM_DIAG_EV_LAUNCH, 100);
+  stock_input.status = ENOENT;
+  strlcpy(stock_input.layer, "mount_link", sizeof(stock_input.layer));
+  sm_diag_record_t *stock = apply(&store, stock_input);
   assert(stock != rec && stock->managed == 0);
   assert(stock->stages[SM_DIAG_STAGE_MOUNTED].state == SM_DIAG_NOT_OBSERVED);
   assert(stock->outcome == SM_DIAG_OUTCOME_LAUNCH_IN_PROGRESS);
+  // An unsupported title id (no layer, EINVAL) is not managed either.
+  sm_diag_record_t *unsupported = launch(&store, EINVAL, 200);
+  assert(unsupported->managed == 0);
+  assert(unsupported->stages[SM_DIAG_STAGE_MOUNTED].state == SM_DIAG_NOT_OBSERVED);
+  // A managed Kraken title whose .pkg is offline fails in "kraken_source"
+  // with ENOENT: a managed mount failure, not "not managed".
+  sm_diag_input_t offline = event(SM_DIAG_EV_LAUNCH, 300);
+  strlcpy(offline.title_id, "PPSA05678", sizeof(offline.title_id));
+  offline.status = ENOENT;
+  offline.native_errno = ENOENT;
+  strlcpy(offline.layer, "kraken_source", sizeof(offline.layer));
+  sm_diag_record_t *kraken = apply(&store, offline);
+  assert(kraken->managed == 1);
+  assert(kraken->stages[SM_DIAG_STAGE_MOUNTED].state == SM_DIAG_FAILED);
+  assert(kraken->outcome == SM_DIAG_OUTCOME_MOUNT_FAILED);
+  assert(!strcmp(kraken->diagnosis.category, "mount_failed"));
+  assert(strstr(kraken->diagnosis.evidence[0], "layer=kraken_source"));
   sm_diag_store_free(&store);
 }
 
@@ -412,6 +452,44 @@ static const sm_diag_diagnosis_t *classify(sm_diag_record_t *rec) {
   static sm_diag_diagnosis_t out;
   assert(sm_diag_classify(rec, &out));
   return &out;
+}
+
+static void test_fs_availability(void) {
+  char reason[160];
+  // vfs.conflist missing (PS5): mounts present now prove the filesystem.
+  assert(sm_diag_fs_availability("nullfs", -1, 1074, false, reason, sizeof(reason)) == 1);
+  assert(!strcmp(reason, "1074 nullfs mount(s) present"));
+  // None present, but UniMount mounted one earlier in this process.
+  assert(sm_diag_fs_availability("unionfs", -1, 0, true, reason, sizeof(reason)) == 1);
+  assert(!strcmp(reason, "mounted successfully this session"));
+  // No evidence either way: unknown, never "unavailable".
+  assert(sm_diag_fs_availability("pfs", -1, 0, false, reason, sizeof(reason)) == -1);
+  assert(!strcmp(reason, "not yet observed on this boot"));
+  assert(!strstr(reason, "conflist"));
+  // A readable kernel list still decides when it is available.
+  assert(sm_diag_fs_availability("unionfs", 1, 0, false, reason, sizeof(reason)) == 1);
+  assert(strstr(reason, "registered in the kernel"));
+  assert(sm_diag_fs_availability("unionfs", 0, 0, false, reason, sizeof(reason)) == 0);
+  assert(sm_diag_fs_availability("unionfs", 0, 2, false, reason, sizeof(reason)) == 1);
+}
+
+static void test_error_history_keeps_newest(void) {
+  enum { CAP = 4, FILES = 11 };
+  sm_diag_history_entry_t kept[CAP];
+  size_t count = 0;
+  // readdir order is arbitrary: newest files arrive first, last and between.
+  const int64_t mtimes[FILES] = {500, 10, 20, 900, 30, 40, 700, 50, 800, 60, 600};
+  for (size_t i = 0; i < FILES; ++i) {
+    sm_diag_history_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    snprintf(entry.name, sizeof(entry.name), "e%02zu.json", i);
+    entry.mtime = mtimes[i];
+    sm_diag_history_keep_newest(kept, &count, CAP, &entry);
+  }
+  assert(count == CAP);
+  qsort(kept, count, sizeof(kept[0]), sm_diag_history_compare);
+  assert(kept[0].mtime == 900 && kept[1].mtime == 800 &&
+         kept[2].mtime == 700 && kept[3].mtime == 600);
 }
 
 static void test_classification_rules(void) {
@@ -745,6 +823,8 @@ int main(int argc, char **argv) {
   test_handoff_keeps_process_alive();
   test_fatal_signal_is_crashed();
   test_mount_failure_and_unmanaged_titles();
+  test_error_history_keeps_newest();
+  test_fs_availability();
   test_process_without_launch_request();
   test_store_keeps_last_64();
   test_json_round_trip();

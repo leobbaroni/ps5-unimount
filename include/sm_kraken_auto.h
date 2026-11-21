@@ -26,6 +26,9 @@ void sm_kraken_auto_job_finished(const char *source, int status,
 void sm_kraken_auto_forget_failure(const char *path);
 // True while an automatic job is in flight.
 bool sm_kraken_auto_busy(void);
+// True while a game runs or a background title blocks: automatic jobs do not
+// start and a running automatic job is cancelled (retried later).
+bool sm_kraken_auto_game_active(void);
 
 typedef struct {
   char path[MAX_PATH];
@@ -39,7 +42,8 @@ typedef struct {
 
 // Copy the candidates that are not ready yet. Returns the number copied.
 size_t sm_kraken_auto_snapshot(sm_kraken_auto_entry_t *out, size_t max);
-// Add {enabled, queued, building, failed:[{path,error}]} to an object.
+// Add {enabled, queued, building, failed:[{path,error}], overflow} to an
+// object.
 bool sm_kraken_auto_add_status_json(struct json_object *object);
 
 #endif

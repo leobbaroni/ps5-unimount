@@ -27,8 +27,9 @@
 
 #define COMPAT_BIND_RETRY_US 10000000ull
 #define COMPAT_IDLE_POLL_MS 500
-#define COMPAT_IO_TIMEOUT_MS 2000
-#define COMPAT_REQUEST_DEADLINE_US 5000000ull
+#define COMPAT_POLL_SLICE_MS 100
+#define COMPAT_REQUEST_DEADLINE_US 2000000ull
+#define COMPAT_REPLY_DEADLINE_US 2000000ull
 #define COMPAT_MAX_AUTO_ENTRIES 64u
 #define COMPAT_CACHE_PATH "/data/shadowmount/kraken"
 
@@ -87,11 +88,25 @@ static int open_listener(unsigned port) {
   return fd;
 }
 
-static bool send_all(int fd, const char *data, size_t length) {
+static bool compat_stopping(void) {
+  return atomic_load(&g_compat_stop) || should_stop_requested();
+}
+
+// The socket is non-blocking: a slow reader cannot hold the single listener
+// thread past the deadline or delay shutdown.
+static bool send_all(int fd, const char *data, size_t length,
+                     uint64_t deadline) {
   while (length > 0) {
+    if (compat_stopping() || monotonic_time_us() >= deadline)
+      return false;
     ssize_t sent = send(fd, data, length, 0);
     if (sent < 0 && errno == EINTR)
       continue;
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+      (void)poll(&pfd, 1, COMPAT_POLL_SLICE_MS);
+      continue;
+    }
     if (sent <= 0)
       return false;
     data += sent;
@@ -137,8 +152,9 @@ static void send_reply(int fd, int code, const char *content_type,
   }
   if (written <= 0 || (size_t)written >= sizeof(head))
     return;
-  if (send_all(fd, head, (size_t)written) && body_len > 0)
-    (void)send_all(fd, body, body_len);
+  uint64_t deadline = monotonic_time_us() + COMPAT_REPLY_DEADLINE_US;
+  if (send_all(fd, head, (size_t)written, deadline) && body_len > 0)
+    (void)send_all(fd, body, body_len, deadline);
 }
 
 static bool add_value(struct json_object *object, const char *key,
@@ -320,7 +336,8 @@ static char *build_state_json(size_t *length_out) {
   bool ok =
       add_value(root, "version", json_object_new_string(KRAKEN_MOUNT_RELEASE)) &&
       add_value(root, "busy", json_object_new_boolean(sm_kraken_auto_busy())) &&
-      add_value(root, "paused", json_object_new_boolean(game_active)) &&
+      add_value(root, "paused",
+                json_object_new_boolean(sm_kraken_auto_game_active())) &&
       add_null(root, "waiting") &&
       add_value(root, "running", running) &&
       (!game_active || !running_title[0] ||
@@ -350,13 +367,8 @@ static char *build_state_json(size_t *length_out) {
 }
 
 static void handle_connection(int fd, const struct sockaddr_in *peer) {
-  struct timeval tv = {.tv_sec = COMPAT_IO_TIMEOUT_MS / 1000,
-                       .tv_usec = (COMPAT_IO_TIMEOUT_MS % 1000) * 1000};
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0)
-    (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+  if (!sm_set_fd_nonblocking(fd))
+    return;
 
   char *buffer = malloc(SM_COMPAT_MAX_REQUEST + 1u);
   if (!buffer)
@@ -366,12 +378,20 @@ static void handle_connection(int fd, const struct sockaddr_in *peer) {
   int scan = 0;
   uint64_t deadline = monotonic_time_us() + COMPAT_REQUEST_DEADLINE_US;
   while (scan == 0) {
-    if (length >= SM_COMPAT_MAX_REQUEST || monotonic_time_us() > deadline) {
-      scan = length >= SM_COMPAT_MAX_REQUEST ? -431 : 0;
+    if (length >= SM_COMPAT_MAX_REQUEST) {
+      scan = -431;
       break;
     }
+    if (compat_stopping() || monotonic_time_us() >= deadline)
+      break;
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    int ready = poll(&pfd, 1, COMPAT_POLL_SLICE_MS);
+    if (ready < 0 && errno != EINTR)
+      break;
+    if (ready <= 0)
+      continue;
     ssize_t count = recv(fd, buffer + length, SM_COMPAT_MAX_REQUEST - length, 0);
-    if (count < 0 && errno == EINTR)
+    if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
       continue;
     if (count <= 0)
       break;

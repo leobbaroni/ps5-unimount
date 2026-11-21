@@ -2,6 +2,7 @@
 #include "sm_shellcore_service.h"
 #include "sm_runtime.h"
 #include "sm_image.h"
+#include "sm_diag.h"
 #include "sm_hash.h"
 #include "sm_image_cache.h"
 #include "sm_game_cache.h"
@@ -1046,6 +1047,8 @@ static bool perform_image_nmount(const char *file_path, uint64_t generation,
   unsigned int mount_flags =
       get_nmount_flags(fs_type, mount_read_only, profile->legacy, &mount_mode);
   if (nmount(iov, iovlen, (int)mount_flags) == 0) {
+    if (image_fs_type_is_pfs(fs_type))
+      sm_diag_note_fs_mounted("pfs");
     return fs_type != IMAGE_FS_EXFAT ||
            verify_exfat_nmount_result(file_path, generation, attach_backend,
                                       devname, mount_point);

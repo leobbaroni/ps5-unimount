@@ -29,10 +29,17 @@ static struct GameCache g_game_cache[MAX_PENDING];
 static pthread_mutex_t g_game_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool game_cache_source_exists(const struct GameCache *entry) {
-  // A Kraken cache under /data always exists; its source is the .pkg.
+  // A Kraken cache under /data always exists; its source is the .pkg. Only
+  // a definite "absent" counts as missing (auto-remove uninstalls the
+  // title): an unreadable or corrupt marker or a stat error is unknown.
   char package[MAX_PATH];
-  if (entry->path[0] != '\0' && sm_kraken_is_cache(entry->path))
-    return sm_kraken_source(entry->path, package) && path_exists(package);
+  if (entry->path[0] != '\0' && sm_kraken_is_cache(entry->path)) {
+    struct stat st;
+    if (!sm_kraken_source(entry->path, package))
+      return stat(entry->path, &st) == 0 ||
+             (errno != ENOENT && errno != ENOTDIR);
+    return stat(package, &st) == 0 || (errno != ENOENT && errno != ENOTDIR);
+  }
   if (entry->path[0] != '\0' && path_exists(entry->path))
     return true;
 

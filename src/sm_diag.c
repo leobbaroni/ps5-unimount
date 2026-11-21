@@ -25,7 +25,6 @@
 
 #define DIAG_QUEUE_SIZE 64u
 #define DIAG_LAUNCHES_FILE LOG_DIR "/launches.json"
-#define DIAG_LAUNCHES_TEMP LOG_DIR "/launches.json.tmp"
 #define DIAG_LAUNCHES_MAX_BYTES (4u * 1024u * 1024u)
 #define DIAG_ERROR_HISTORY_DIR "/system_data/priv/error/history"
 #define DIAG_ERROR_FILE_MAX_BYTES (64u * 1024u)
@@ -40,11 +39,7 @@
 #define DIAG_DEFAULT_LIST_LIMIT 20u
 #define DIAG_MAX_ERROR_LIST 200u
 
-typedef struct {
-  char name[SM_DIAG_FILE_NAME_SIZE];
-  int64_t mtime;
-  off_t size;
-} history_entry_t;
+typedef sm_diag_history_entry_t history_entry_t;
 
 typedef struct {
   int kstuff_loaded;
@@ -68,6 +63,8 @@ static struct {
   size_t queue_count;
   uint64_t dropped;
   bool thread_running;
+  bool stop;  // sm_diag_stop(): no new events, thread exits after a flush
+  pthread_t thread;
 
   pthread_mutex_t store_mutex;
   pthread_cond_t loaded_cond;
@@ -97,20 +94,28 @@ static int64_t wall_time_ms(void) {
 
 static void *diag_thread_main(void *arg);
 
+// Without the thread the store never loads: report it unavailable at once
+// instead of letting every reader wait DIAG_LOAD_WAIT_US.
+static void mark_store_unavailable(void) {
+  pthread_mutex_lock(&g_diag.store_mutex);
+  g_diag.store_ready = false;
+  g_diag.loaded = true;
+  pthread_cond_broadcast(&g_diag.loaded_cond);
+  pthread_mutex_unlock(&g_diag.store_mutex);
+}
+
 static void start_thread_once(void) {
-  pthread_t thread;
-  pthread_attr_t attr;
-  if (pthread_attr_init(&attr) != 0)
-    return;
-  (void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-  if (pthread_create(&thread, &attr, diag_thread_main, NULL) == 0) {
-    pthread_mutex_lock(&g_diag.queue_mutex);
-    g_diag.thread_running = true;
-    pthread_mutex_unlock(&g_diag.queue_mutex);
-  } else {
-    log_debug("  [DIAG] observer thread unavailable: %s", strerror(errno));
+  pthread_mutex_lock(&g_diag.queue_mutex);
+  bool stopping = g_diag.stop;
+  int rc = stopping ? ECANCELED
+                    : pthread_create(&g_diag.thread, NULL, diag_thread_main, NULL);
+  g_diag.thread_running = rc == 0;
+  pthread_mutex_unlock(&g_diag.queue_mutex);
+  if (rc != 0) {
+    if (!stopping)
+      log_debug("  [DIAG] observer thread unavailable: %s", strerror(rc));
+    mark_store_unavailable();
   }
-  pthread_attr_destroy(&attr);
 }
 
 static void ensure_started(void) { (void)pthread_once(&g_diag.once, start_thread_once); }
@@ -120,7 +125,9 @@ static void ensure_started(void) { (void)pthread_once(&g_diag.once, start_thread
 static void enqueue(const sm_diag_input_t *input) {
   ensure_started();
   pthread_mutex_lock(&g_diag.queue_mutex);
-  if (g_diag.queue_count >= DIAG_QUEUE_SIZE) {
+  if (g_diag.stop || !g_diag.thread_running) {
+    // Shut down (or never started): nothing would consume the event.
+  } else if (g_diag.queue_count >= DIAG_QUEUE_SIZE) {
     g_diag.dropped++;
   } else {
     size_t slot = (g_diag.queue_head + g_diag.queue_count) % DIAG_QUEUE_SIZE;
@@ -231,7 +238,7 @@ void sm_diag_note_game_error(pid_t pid, const char *title_id, int kind,
 static char *read_small_file(const char *path, size_t max_bytes,
                              size_t *size_out) {
   *size_out = 0;
-  int fd = open(path, O_RDONLY | O_NONBLOCK);
+  int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
   if (fd < 0)
     return NULL;
   struct stat st;
@@ -263,9 +270,13 @@ static char *read_small_file(const char *path, size_t max_bytes,
 }
 
 static bool write_launches_file(const char *text, size_t size) {
-  int fd = open(DIAG_LAUNCHES_TEMP, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  // Unique temporary name created exclusively (never through a planted
+  // symlink), then renamed over the target, like owner.json.
+  char temporary[] = DIAG_LAUNCHES_FILE ".XXXXXX";
+  int fd = mkstemp(temporary);
   if (fd < 0)
     return false;
+  (void)fchmod(fd, 0644);
   size_t done = 0;
   bool ok = true;
   while (done < size) {
@@ -282,10 +293,13 @@ static bool write_launches_file(const char *text, size_t size) {
     ok = false;
   if (close(fd) != 0)
     ok = false;
-  if (ok && rename(DIAG_LAUNCHES_TEMP, DIAG_LAUNCHES_FILE) != 0)
+  if (ok && rename(temporary, DIAG_LAUNCHES_FILE) != 0)
     ok = false;
-  if (!ok)
-    (void)unlink(DIAG_LAUNCHES_TEMP);
+  if (!ok) {
+    int saved_errno = errno;
+    (void)unlink(temporary);
+    errno = saved_errno;
+  }
   return ok;
 }
 
@@ -395,8 +409,16 @@ static void capture_klog_anchor(launch_environment_t *env) {
 
 static void read_required_firmware(const char *title_id,
                                    launch_environment_t *env) {
+  // Read a managed title's param.json from its source, never through the
+  // live /system_ex/app/<TID> mount: an open file there during the launch
+  // window can make a non-forced unmount fail with EBUSY.
+  char source[MAX_PATH];
   char path[MAX_PATH];
-  snprintf(path, sizeof(path), "/system_ex/app/%s/sce_sys/param.json", title_id);
+  if (read_mount_link(title_id, source, sizeof(source)))
+    snprintf(path, sizeof(path), "%s/sce_sys/param.json", source);
+  else
+    snprintf(path, sizeof(path), "/system_ex/app/%s/sce_sys/param.json",
+             title_id);
   size_t size = 0;
   char *text = read_small_file(path, 1024u * 1024u, &size);
   if (!text)
@@ -517,20 +539,13 @@ static void copy_layers(sm_diag_record_t *rec, const sm_diag_record_t *tmp) {
 
 // --- Native error history ---
 
-static int compare_history(const void *a, const void *b) {
-  const history_entry_t *left = a;
-  const history_entry_t *right = b;
-  if (left->mtime != right->mtime)
-    return left->mtime < right->mtime ? 1 : -1;
-  return -strcmp(left->name, right->name);
-}
-
 static bool has_json_suffix(const char *name) {
   size_t length = strlen(name);
   return length > 5u && strcasecmp(name + length - 5u, ".json") == 0;
 }
 
-// Newest first. Returns -1 with errno when the directory cannot be read.
+// Newest first, at most DIAG_ERROR_HISTORY_MAX_FILES (the newest ones).
+// Returns -1 with errno when the directory cannot be read.
 static ssize_t list_error_history(history_entry_t **out) {
   *out = NULL;
   DIR *dir = opendir(DIAG_ERROR_HISTORY_DIR);
@@ -545,7 +560,7 @@ static ssize_t list_error_history(history_entry_t **out) {
   }
   size_t count = 0;
   struct dirent *entry;
-  while ((entry = readdir(dir)) != NULL && count < DIAG_ERROR_HISTORY_MAX_FILES) {
+  while ((entry = readdir(dir)) != NULL) {
     if (entry->d_name[0] == '.' || !has_json_suffix(entry->d_name) ||
         strlen(entry->d_name) >= SM_DIAG_FILE_NAME_SIZE)
       continue;
@@ -554,13 +569,15 @@ static ssize_t list_error_history(history_entry_t **out) {
     snprintf(path, sizeof(path), "%s/%s", DIAG_ERROR_HISTORY_DIR, entry->d_name);
     if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
       continue;
-    history_entry_t *item = &entries[count++];
-    (void)strlcpy(item->name, entry->d_name, sizeof(item->name));
-    item->mtime = (int64_t)st.st_mtime;
-    item->size = st.st_size;
+    history_entry_t candidate;
+    (void)strlcpy(candidate.name, entry->d_name, sizeof(candidate.name));
+    candidate.mtime = (int64_t)st.st_mtime;
+    candidate.size = (int64_t)st.st_size;
+    sm_diag_history_keep_newest(entries, &count, DIAG_ERROR_HISTORY_MAX_FILES,
+                                &candidate);
   }
   closedir(dir);
-  qsort(entries, count, sizeof(*entries), compare_history);
+  qsort(entries, count, sizeof(*entries), sm_diag_history_compare);
   *out = entries;
   return (ssize_t)count;
 }
@@ -717,6 +734,7 @@ static void process_event(const sm_diag_input_t *input,
   sm_diag_record_t *layers = NULL;
 
   if (input->type == SM_DIAG_EV_LAUNCH) {
+    // param.json only matters for a launch whose mount succeeded.
     capture_environment(input->title_id, input->status == 0, &env);
     capture_klog_anchor(&env);
     have_env = true;
@@ -902,9 +920,10 @@ static void *diag_thread_main(void *arg) {
 
   uint64_t wait_us = DIAG_ACTIVE_TICK_US;
   static sm_diag_input_t batch[DIAG_QUEUE_SIZE]; // Only this thread uses it.
-  while (true) {
+  bool stop = false;
+  while (!stop) {
     pthread_mutex_lock(&g_diag.queue_mutex);
-    if (g_diag.queue_count == 0) {
+    if (g_diag.queue_count == 0 && !g_diag.stop) {
       struct timespec deadline;
       clock_gettime(CLOCK_REALTIME, &deadline);
       deadline.tv_sec += (time_t)(wait_us / 1000000u);
@@ -923,6 +942,7 @@ static void *diag_thread_main(void *arg) {
     g_diag.queue_count = 0;
     uint64_t dropped = g_diag.dropped;
     g_diag.dropped = 0;
+    stop = g_diag.stop;
     pthread_mutex_unlock(&g_diag.queue_mutex);
 
     if (dropped)
@@ -934,7 +954,23 @@ static void *diag_thread_main(void *arg) {
     }
     wait_us = periodic(&cfg);
   }
+  // Last record written before app.db, mdbg and the log are torn down.
+  persist_if_due(monotonic_time_us(), true);
   return NULL;
+}
+
+void sm_diag_stop(void) {
+  pthread_mutex_lock(&g_diag.queue_mutex);
+  g_diag.stop = true;
+  bool running = g_diag.thread_running;
+  pthread_cond_broadcast(&g_diag.queue_cond);
+  pthread_mutex_unlock(&g_diag.queue_mutex);
+  // A later ensure_started() sees the stop flag and creates no thread.
+  if (running)
+    (void)pthread_join(g_diag.thread, NULL);
+  pthread_mutex_lock(&g_diag.queue_mutex);
+  g_diag.thread_running = false;
+  pthread_mutex_unlock(&g_diag.queue_mutex);
 }
 
 // --- API ---

@@ -9,6 +9,7 @@
 #include "sm_kraken.h"
 #include "sm_log.h"
 #include "sm_mount_diag.h"
+#include "sm_diag.h"
 #include "sm_path_utils.h"
 #include "sm_paths.h"
 #include "sm_runtime.h"
@@ -158,6 +159,8 @@ static bool mount_sandbox_layer(const char *title_id,
   if (nmount(overlay ? overlay_iov : directory_iov,
              overlay ? IOVEC_SIZE(overlay_iov) : IOVEC_SIZE(directory_iov),
              flags) == 0) {
+    if (overlay)
+      sm_diag_note_fs_mounted("unionfs");
     log_debug("  [FAKELIB] %s mounted for %s: %s -> %s", label,
               title_id, source_path, mount_path);
     return true;
@@ -1033,6 +1036,58 @@ static bool compute_fakelib_signature(const char *source_path, uint32_t flags,
   return true;
 }
 
+// sm_ampr_file_is_ng() reads the whole module; remember answers per file
+// identity (dev, ino, size, mtime, ctime) so fingerprint and copy passes do
+// not reread unchanged files. Read errors (-1) are not remembered.
+#define AMPR_NG_CACHE_SIZE 16u
+typedef struct {
+  bool used;
+  dev_t dev;
+  ino_t ino;
+  off_t size;
+  struct timespec mtime, ctime;
+  int is_ng;
+} ampr_ng_cache_entry_t;
+static pthread_mutex_t g_ampr_ng_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static ampr_ng_cache_entry_t g_ampr_ng_cache[AMPR_NG_CACHE_SIZE];
+static size_t g_ampr_ng_cache_next;
+
+static bool ampr_ng_cache_matches(const ampr_ng_cache_entry_t *entry,
+                                  const struct stat *st) {
+  return entry->used && entry->dev == st->st_dev && entry->ino == st->st_ino &&
+         entry->size == st->st_size &&
+         entry->mtime.tv_sec == st->st_mtim.tv_sec &&
+         entry->mtime.tv_nsec == st->st_mtim.tv_nsec &&
+         entry->ctime.tv_sec == st->st_ctim.tv_sec &&
+         entry->ctime.tv_nsec == st->st_ctim.tv_nsec;
+}
+
+static int cached_ampr_file_is_ng(const char *path) {
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return -1;
+  pthread_mutex_lock(&g_ampr_ng_cache_mutex);
+  for (size_t i = 0; i < AMPR_NG_CACHE_SIZE; ++i) {
+    if (ampr_ng_cache_matches(&g_ampr_ng_cache[i], &st)) {
+      int is_ng = g_ampr_ng_cache[i].is_ng;
+      pthread_mutex_unlock(&g_ampr_ng_cache_mutex);
+      return is_ng;
+    }
+  }
+  pthread_mutex_unlock(&g_ampr_ng_cache_mutex);
+  int is_ng = sm_ampr_file_is_ng(path);
+  if (is_ng < 0)
+    return is_ng;
+  pthread_mutex_lock(&g_ampr_ng_cache_mutex);
+  ampr_ng_cache_entry_t *entry = &g_ampr_ng_cache[g_ampr_ng_cache_next];
+  g_ampr_ng_cache_next = (g_ampr_ng_cache_next + 1u) % AMPR_NG_CACHE_SIZE;
+  *entry = (ampr_ng_cache_entry_t){
+      .used = true, .dev = st.st_dev, .ino = st.st_ino, .size = st.st_size,
+      .mtime = st.st_mtim, .ctime = st.st_ctim, .is_ng = is_ng};
+  pthread_mutex_unlock(&g_ampr_ng_cache_mutex);
+  return is_ng;
+}
+
 // PR #200 rule: libSceAmpr.sprx is replaced only by a build of the same
 // runtime, so an upstream ampr_emu never overwrites a game's ampr-emu-ng.
 // Fingerprint and copy apply the same answer, keeping their counts equal.
@@ -1040,13 +1095,21 @@ static bool emulator_runtime_matches(const char *name, const char *source_file,
                                      const char *emulator_file, bool log) {
   if (strcasecmp(name, "libSceAmpr.sprx") != 0)
     return true;
-  int source_ng = sm_ampr_file_is_ng(source_file);
-  int emulator_ng = sm_ampr_file_is_ng(emulator_file);
+  int source_ng = cached_ampr_file_is_ng(source_file);
+  int source_errno = errno;
+  int emulator_ng = cached_ampr_file_is_ng(emulator_file);
+  int emulator_errno = errno;
   bool allowed =
       sm_ampr_emulator_replacement_allowed(name, source_ng, emulator_ng);
-  if (!allowed && log)
-    log_debug("  [FAKELIB] keeping %s: emulator %s is a different AMPR runtime",
-              source_file, emulator_file);
+  if (!allowed && log) {
+    if (source_ng < 0 || emulator_ng < 0)
+      log_debug("  [FAKELIB] keeping %s: cannot read the AMPR runtime of %s (%s)",
+                source_file, source_ng < 0 ? source_file : emulator_file,
+                strerror(source_ng < 0 ? source_errno : emulator_errno));
+    else
+      log_debug("  [FAKELIB] keeping %s: emulator %s is a different AMPR runtime",
+                source_file, emulator_file);
+  }
   return allowed;
 }
 
@@ -1524,6 +1587,8 @@ static void cleanup_expired_fakelib_caches(uint64_t now_sec) {
   closedir(d);
 }
 
+static void cleanup_ampr_ng_overlays(void);
+
 void sm_fakelib_cleanup_caches(void) {
   time_t now = time(NULL);
   if (now < 0)
@@ -1531,6 +1596,7 @@ void sm_fakelib_cleanup_caches(void) {
 
   pthread_mutex_lock(&g_fakelib_cache_mutex);
   cleanup_expired_fakelib_caches((uint64_t)now);
+  cleanup_ampr_ng_overlays();
   pthread_mutex_unlock(&g_fakelib_cache_mutex);
 }
 
@@ -2147,6 +2213,107 @@ static bool cleanup_ppr_backport_fakelib(const char *title_id,
 }
 
 #define AMPR_NG_OVERLAY_ROOT "/data/shadowmount/ampr-ng"
+#define AMPR_NG_SIGNATURE_NAME "source.sig"
+
+static void append_file_identity(char *out, size_t size, const char *label,
+                                 const char *path) {
+  struct stat st;
+  size_t used = strlen(out);
+  if (used >= size)
+    return;
+  if (path && stat(path, &st) == 0)
+    snprintf(out + used, size - used, " %s=%lld:%lld.%09ld:%lld.%09ld", label,
+             (long long)st.st_size, (long long)st.st_mtim.tv_sec,
+             (long)st.st_mtim.tv_nsec, (long long)st.st_ctim.tv_sec,
+             (long)st.st_ctim.tv_nsec);
+  else
+    snprintf(out + used, size - used, " %s=none", label);
+}
+
+// What an AMPR-emu-NG overlay was built from: the fakelib source tree and the
+// AMPR runtime candidates (shared ampr-emu-ng, shared top level, bundled).
+static bool ampr_ng_overlay_signature(const char *source_path,
+                                      const char *emulators, char *out,
+                                      size_t size) {
+  fakelib_cache_signature_t tree = {0};
+  if (source_path && !compute_source_signature(source_path, &tree))
+    return false;
+  int written = snprintf(out, size, "v1 src=%s tree=%llx:%llx:%llu rev=%s",
+                         source_path ? source_path : "none",
+                         (unsigned long long)tree.xor_hash,
+                         (unsigned long long)tree.sum_hash,
+                         (unsigned long long)tree.entry_count,
+                         sm_kraken_bundled_revision());
+  if (written <= 0 || (size_t)written >= size)
+    return false;
+  char shared[MAX_PATH];
+  bool have = emulators && *emulators &&
+              snprintf(shared, sizeof(shared), "%s/ampr-emu-ng/libSceAmpr.sprx",
+                       emulators) < (int)sizeof(shared);
+  append_file_identity(out, size, "ng", have ? shared : NULL);
+  have = emulators && *emulators &&
+         snprintf(shared, sizeof(shared), "%s/libSceAmpr.sprx", emulators) <
+             (int)sizeof(shared);
+  append_file_identity(out, size, "top", have ? shared : NULL);
+  return strlen(out) + 1u < size;
+}
+
+static bool ampr_ng_signature_matches(const char *root, const char *signature) {
+  char path[MAX_PATH];
+  if (snprintf(path, sizeof(path), "%s/" AMPR_NG_SIGNATURE_NAME, root) >=
+      (int)sizeof(path))
+    return false;
+  int fd = open(path, O_RDONLY | O_NOFOLLOW);
+  if (fd < 0)
+    return false;
+  char stored[1024];
+  ssize_t length = read(fd, stored, sizeof(stored) - 1u);
+  close(fd);
+  if (length <= 0)
+    return false;
+  stored[length] = '\0';
+  return strcmp(stored, signature) == 0;
+}
+
+static bool write_ampr_ng_signature(const char *root, const char *signature) {
+  char path[MAX_PATH];
+  if (snprintf(path, sizeof(path), "%s/" AMPR_NG_SIGNATURE_NAME, root) >=
+      (int)sizeof(path))
+    return false;
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+  if (fd < 0)
+    return false;
+  size_t length = strlen(signature);
+  bool ok = write(fd, signature, length) == (ssize_t)length;
+  return close(fd) == 0 && ok;
+}
+
+// Overlays of titles that are no longer managed (removed or unregistered)
+// are deleted; mounted or protected ones stay.
+static void cleanup_ampr_ng_overlays(void) {
+  DIR *d = opendir(AMPR_NG_OVERLAY_ROOT);
+  if (!d)
+    return;
+  struct dirent *entry;
+  while ((entry = readdir(d)) != NULL) {
+    // <TID>.tmp is left to the next build of that title, which resets it.
+    const char *title_id = entry->d_name;
+    if (!is_supported_game_title_id(title_id) ||
+        sm_shellcore_title_is_protected(title_id))
+      continue;
+    char root[MAX_PATH], link[MAX_PATH];
+    if (snprintf(root, sizeof(root), "%s/%s", AMPR_NG_OVERLAY_ROOT,
+                 title_id) >= (int)sizeof(root))
+      continue;
+    if (read_mount_link(title_id, link, sizeof(link)))
+      continue;
+    if (cache_root_is_mounted(root))
+      continue;
+    if (remove_cache_tree(root))
+      log_debug("  [FAKELIB] AMPR-emu-NG overlay removed: %s", root);
+  }
+  closedir(d);
+}
 
 // Folder games packed with ampr_zstd.index only run with AMPR-emu-NG. Build
 // <root>/<TID>/fakelib from the resolved fakelib (if any) and put an
@@ -2186,6 +2353,9 @@ static bool prepare_ampr_ng_overlay(const char *title_id, const char *game_path,
 
   const char *emulators =
       cfg->update_emulators_enabled ? cfg->emulators_path : NULL;
+  char signature[1024];
+  bool have_signature = ampr_ng_overlay_signature(source_path, emulators,
+                                                  signature, sizeof(signature));
   if (cache_root_is_mounted(root)) {
     // Still mounted by an earlier session: refresh only the runtime file.
     if (snprintf(ampr, sizeof(ampr), "%s/libSceAmpr.sprx", overlay) >= (int)sizeof(ampr) ||
@@ -2195,12 +2365,24 @@ static bool prepare_ampr_ng_overlay(const char *title_id, const char *game_path,
               title_id);
     return true;
   }
+  // Built earlier from the same fakelib and AMPR selection: no recopy.
+  char existing_ampr[MAX_PATH];
+  struct stat st;
+  if (have_signature && ampr_ng_signature_matches(root, signature) &&
+      snprintf(existing_ampr, sizeof(existing_ampr), "%s/libSceAmpr.sprx",
+               overlay) < (int)sizeof(existing_ampr) &&
+      lstat(existing_ampr, &st) == 0 && S_ISREG(st.st_mode)) {
+    log_debug("  [FAKELIB] AMPR-emu-NG overlay current for %s: %s", title_id,
+              overlay);
+    return true;
+  }
   bool built = remove_cache_tree(temp_root) && mkdir(temp_root, 0777) == 0 &&
                (source_path ? copy_fakelib_source(source_path, temp_fakelib, 0)
                             : mkdir(temp_fakelib, 0777) == 0) &&
                snprintf(ampr, sizeof(ampr), "%s/libSceAmpr.sprx", temp_fakelib) <
                    (int)sizeof(ampr) &&
                sm_kraken_install_ampr(ampr, emulators, title_id) &&
+               (!have_signature || write_ampr_ng_signature(temp_root, signature)) &&
                remove_cache_tree(root) && rename(temp_root, root) == 0;
   if (!built) {
     log_debug("  [FAKELIB] AMPR-emu-NG overlay failed for %s: %s", title_id,

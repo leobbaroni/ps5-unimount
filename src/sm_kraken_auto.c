@@ -53,6 +53,9 @@ static struct {
   char job_path[MAX_PATH];
   auto_candidate_t candidates[AUTO_MAX_CANDIDATES];
   sm_auto_failure_t failures[AUTO_MAX_FAILURES];
+  uint64_t overflow;       // untracked packages in the last complete pass
+  uint64_t overflow_pass;  // counted during the current pass
+  bool overflow_logged;
 } g_auto = {
     .mutex = PTHREAD_MUTEX_INITIALIZER,
     .cond = PTHREAD_COND_INITIALIZER,
@@ -75,6 +78,7 @@ static auto_candidate_t *find_candidate_locked(const char *path) {
 void sm_kraken_auto_begin_pass(void) {
   pthread_mutex_lock(&g_auto.mutex);
   ++g_auto.generation;
+  g_auto.overflow_pass = 0;
   pthread_mutex_unlock(&g_auto.mutex);
 }
 
@@ -96,7 +100,16 @@ void sm_kraken_auto_note_package(const char *path, bool *unstable_out) {
       if (!g_auto.candidates[i].used)
         c = &g_auto.candidates[i];
     if (!c) {
+      ++g_auto.overflow_pass;
+      if (g_auto.overflow_pass > g_auto.overflow)
+        g_auto.overflow = g_auto.overflow_pass;
+      bool first = !g_auto.overflow_logged;
+      g_auto.overflow_logged = true;
       pthread_mutex_unlock(&g_auto.mutex);
+      if (first)
+        log_debug("  [AUTO] candidate table full (%u packages); %s and later "
+                  "packages are not mounted automatically",
+                  AUTO_MAX_CANDIDATES, path);
       return;
     }
     memset(c, 0, sizeof(*c));
@@ -122,6 +135,7 @@ void sm_kraken_auto_note_package(const char *path, bool *unstable_out) {
 void sm_kraken_auto_end_pass(bool complete) {
   pthread_mutex_lock(&g_auto.mutex);
   if (complete) {
+    g_auto.overflow = g_auto.overflow_pass;
     for (size_t i = 0; i < AUTO_MAX_CANDIDATES; ++i) {
       auto_candidate_t *c = &g_auto.candidates[i];
       if (c->used && !c->building && c->generation != g_auto.generation)
@@ -209,6 +223,11 @@ void sm_kraken_auto_forget_failure(const char *path) {
   pthread_mutex_unlock(&g_auto.mutex);
 }
 
+bool sm_kraken_auto_game_active(void) {
+  return sm_game_lifecycle_has_active_game() ||
+         !sm_game_lifecycle_background_title(NULL);
+}
+
 bool sm_kraken_auto_busy(void) {
   pthread_mutex_lock(&g_auto.mutex);
   bool busy = g_auto.job_active;
@@ -272,8 +291,7 @@ static void process_candidates(void) {
   memcpy(work, g_auto.candidates, AUTO_MAX_CANDIDATES * sizeof(*work));
   pthread_mutex_unlock(&g_auto.mutex);
 
-  bool game_running = sm_game_lifecycle_has_active_game() ||
-                      !sm_game_lifecycle_background_title(NULL);
+  bool game_running = sm_kraken_auto_game_active();
   sm_game_cache_snapshot_entry_t *games = NULL;
   size_t game_count = 0;
   (void)sm_game_cache_snapshot(&games, &game_count);
@@ -321,10 +339,12 @@ static void process_candidates(void) {
     bool started_now = false;
     if (decision == SM_AUTO_START) {
       // Claim before starting: the job's result tap may arrive at any time.
+      // A game may have started while this pass parsed headers.
+      bool game_now = sm_kraken_auto_game_active();
       pthread_mutex_lock(&g_auto.mutex);
       auto_candidate_t *live = find_candidate_locked(c->path);
-      bool claimed = !g_auto.job_active && live && live->size == c->size &&
-                     live->mtime == c->mtime;
+      bool claimed = !game_now && !g_auto.job_active && live &&
+                     live->size == c->size && live->mtime == c->mtime;
       if (claimed) {
         g_auto.job_active = true;
         (void)strlcpy(g_auto.job_path, c->path, sizeof(g_auto.job_path));
@@ -491,6 +511,7 @@ bool sm_kraken_auto_add_status_json(struct json_object *object) {
   char building[MAX_PATH] = "";
   bool ok = true;
   pthread_mutex_lock(&g_auto.mutex);
+  uint64_t overflow = g_auto.overflow;
   for (size_t i = 0; i < AUTO_MAX_CANDIDATES; ++i) {
     const auto_candidate_t *c = &g_auto.candidates[i];
     if (c->used && c->eligible && !c->building &&
@@ -518,6 +539,7 @@ bool sm_kraken_auto_add_status_json(struct json_object *object) {
   return add_value(object, "failed", failed) &&
          add_value(object, "enabled", json_object_new_boolean(auto_enabled())) &&
          add_value(object, "queued", json_object_new_int64((int64_t)queued)) &&
+         add_value(object, "overflow", json_object_new_int64((int64_t)overflow)) &&
          (building[0] ? add_value(object, "building", json_object_new_string(building))
                       : json_object_object_add(object, "building", NULL) == 0);
 }

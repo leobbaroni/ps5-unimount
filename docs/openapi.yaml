@@ -2581,10 +2581,13 @@ components:
           properties:
             state:
               type: string
-              enum: [pending, absent, taken_over, waiting_for_game, waiting_for_quit]
+              enum: [pending, absent, taken_over, waiting_for_game, waiting_for_quit, waiting_for_reply]
             version:
               type: [string, "null"]
               description: Version reported by the Kraken Mount that answered on port 8097
+            detail:
+              type: [string, "null"]
+              description: Why the takeover waits for a conclusive reply, or why the listener on port 8097 is not Kraken Mount
         legacy_mounts:
           type: object
           additionalProperties: false
@@ -2621,6 +2624,10 @@ components:
               minimum: 0
             building:
               type: [string, "null"]
+            overflow:
+              type: integer
+              minimum: 0
+              description: .pkg files the last complete scan pass could not track because the 64-entry candidate table was full
             failed:
               type: array
               items:
