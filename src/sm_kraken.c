@@ -12,6 +12,7 @@
 #include "sm_scan.h"
 #include "sm_shellcore_service.h"
 #include "sm_storage.h"
+#include "sm_unimount_logic.h"
 #include <json-c/json.h>
 
 #define KRAKEN_CACHE LOG_DIR "/kraken"
@@ -924,27 +925,65 @@ static unsigned char *read_shared_ampr(const char *path, size_t *size) {
   return data;
 }
 
-static bool refresh_runtime_file(const char *cache, const char *emulators_path) {
-  char path[MAX_PATH], shared_path[MAX_PATH];
-  if (!join_path(cache, KRAKEN_AMPR, path))
-    return false;
-  unsigned char *shared = NULL;
-  size_t size = (size_t)(sm_kraken_runtime_end - sm_kraken_runtime_start);
-  if (emulators_path && *emulators_path) {
-    if (join_path(emulators_path, KRAKEN_AMPR_NAME, shared_path))
-      shared = read_shared_ampr(shared_path, &size);
-    if (!shared && errno != ENOENT)
-      log_debug("  [KRAKEN] shared AMPR unavailable in %s: %s", emulators_path, strerror(errno));
+// A shared AMPR-emu-NG from <emulators>/ampr-emu-ng (PR #200 layout) wins
+// over <emulators>/libSceAmpr.sprx; either must pass read_shared_ampr.
+static unsigned char *load_shared_ampr(const char *emulators_path, size_t *size,
+                                       char shared_path[MAX_PATH]) {
+  if (!emulators_path || !*emulators_path)
+    return NULL;
+  char ng_path[MAX_PATH], top_path[MAX_PATH];
+  unsigned char *ng = NULL, *top = NULL;
+  size_t ng_size = 0, top_size = 0;
+  if (join_path(emulators_path, "ampr-emu-ng/" KRAKEN_AMPR_NAME, ng_path))
+    ng = read_shared_ampr(ng_path, &ng_size);
+  if (!ng && errno != ENOENT)
+    log_debug("  [KRAKEN] shared AMPR unavailable in %s/ampr-emu-ng: %s",
+              emulators_path, strerror(errno));
+  if (!ng && join_path(emulators_path, KRAKEN_AMPR_NAME, top_path))
+    top = read_shared_ampr(top_path, &top_size);
+  if (!ng && !top && errno != ENOENT)
+    log_debug("  [KRAKEN] shared AMPR unavailable in %s: %s", emulators_path, strerror(errno));
+  switch (sm_ampr_ng_select_source(ng != NULL, top != NULL)) {
+  case SM_AMPR_SOURCE_SHARED_NG_DIR:
+    (void)strlcpy(shared_path, ng_path, MAX_PATH);
+    *size = ng_size;
+    return ng;
+  case SM_AMPR_SOURCE_SHARED_TOP:
+    (void)strlcpy(shared_path, top_path, MAX_PATH);
+    *size = top_size;
+    return top;
+  case SM_AMPR_SOURCE_BUNDLED:
+  default:
+    return NULL;
   }
+}
+
+static bool install_ampr_file(const char *path, const char *emulators_path,
+                              const char *label) {
+  char shared_path[MAX_PATH];
+  size_t size = (size_t)(sm_kraken_runtime_end - sm_kraken_runtime_start);
+  unsigned char *shared = load_shared_ampr(emulators_path, &size, shared_path);
   const unsigned char *data = shared ? shared : sm_kraken_runtime_start;
   struct stat st;
   bool current = lstat(path, &st) == 0 && (st.st_mode & 0111) != 0 &&
                  cached_module_matches(path, data, size);
   bool ready = current || write_cache_asset(path, data, size, 0777);
   if (ready && !current)
-    log_debug("  [KRAKEN] AMPR for %s: %s", cache, shared ? shared_path : "bundled");
+    log_debug("  [KRAKEN] AMPR for %s: %s", label, shared ? shared_path : "bundled");
   free(shared);
   return ready;
+}
+
+static bool refresh_runtime_file(const char *cache, const char *emulators_path) {
+  char path[MAX_PATH];
+  if (!join_path(cache, KRAKEN_AMPR, path))
+    return false;
+  return install_ampr_file(path, emulators_path, cache);
+}
+
+bool sm_kraken_install_ampr(const char *path, const char *emulators_path,
+                            const char *label) {
+  return install_ampr_file(path, emulators_path, label ? label : path);
 }
 
 static char read_playgo_state(const char *path) {

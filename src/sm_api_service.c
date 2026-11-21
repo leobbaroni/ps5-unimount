@@ -31,6 +31,7 @@
 #include "sm_paths.h"
 #include "sm_pkg.h"
 #include "sm_kraken.h"
+#include "sm_kraken_auto.h"
 #include "sm_pkg_native.h"
 #include "sm_pkg_server.h"
 #include "sm_pkg_stream.h"
@@ -39,9 +40,11 @@
 #include "sm_scanner.h"
 #include "sm_shellcore_service.h"
 #include "sm_storage.h"
+#include "sm_takeover.h"
 #include "sm_time.h"
 #include "sm_title_state.h"
 #include "sm_types.h"
+#include "sm_unimount.h"
 #include "sm_smb.h"
 #include "sm_vfs.h"
 #include "sm_usb.h"
@@ -708,6 +711,10 @@ static void handle_version(struct MHD_Connection *fd) {
   }
   if (!add_json_int(response, "api_version", SM_API_VERSION) ||
       !add_json_string(response, "shadowmount_version", SHADOWMOUNT_VERSION) ||
+      !add_json_string(response, "product", UNIMOUNT_PRODUCT) ||
+      !add_json_string(response, "unimount_version", UNIMOUNT_VERSION) ||
+      !add_json_string(response, "kraken_mount_version", KRAKEN_MOUNT_RELEASE) ||
+      !add_json_string(response, "kraken_mount_revision", KRAKEN_MOUNT_REVISION) ||
       !append_json_string(capabilities, "web_ui") ||
       !append_json_string(capabilities, "storage_space") ||
       !append_json_string(capabilities, "storage_eject") ||
@@ -739,7 +746,8 @@ static void handle_version(struct MHD_Connection *fd) {
       !append_json_string(capabilities, "manage_settings") ||
       !append_json_string(capabilities, "read_debug_log") ||
       !append_json_string(capabilities, "read_kernel_log") ||
-      !append_json_string(capabilities, "rescan")) {
+      !append_json_string(capabilities, "rescan") ||
+      !append_json_string(capabilities, "ownership")) {
     json_object_put(capabilities);
     json_object_put(response);
     send_out_of_memory_response(fd);
@@ -752,6 +760,18 @@ static void handle_version(struct MHD_Connection *fd) {
   }
   (void)send_json_object(fd, 200, response);
   json_object_put(response);
+}
+
+static bool handle_ownership(struct MHD_Connection *connection) {
+  struct json_object *response = new_status_response(0);
+  if (!response || !sm_ownership_add_json(response)) {
+    if (response)
+      json_object_put(response);
+    return send_out_of_memory_response(connection);
+  }
+  bool queued = send_json_object(connection, 200, response);
+  json_object_put(response);
+  return queued;
 }
 
 static int64_t filesystem_size_bytes(uint64_t blocks, uint64_t block_size) {
@@ -2248,6 +2268,7 @@ static const char *operation_error_message(int status, const char *reason) {
       {"kraken_title_conflict", "another source is already registered for this title"},
       {"kraken_use_mount", "use U for a compatible mounted update or use a system-installed base"},
       {"kraken_sources_changed", "one of the selected packages changed during the operation"},
+      {"kraken_legacy_mount_busy", "Kraken Mount's mount of this title is still in use; try again after the game exits"},
   };
   if (reason && reason[0] != '\0') {
     for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
@@ -3277,6 +3298,8 @@ static void dispatch_request(struct MHD_Connection *connection,
     handle_package_install(connection, json, true, false);
   } else if (strcmp(route, SM_API_ROUTE_PACKAGE_RANGE) == 0) {
     handle_package_range(connection, json);
+  } else if (strcmp(route, SM_API_ROUTE_OWNERSHIP) == 0) {
+    (void)handle_ownership(connection);
   } else {
     send_error_response(connection, 404, ENOENT, "unknown API route");
   }
@@ -4208,7 +4231,21 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
     status = ENOENT;
     error = "kraken_base_missing";
   }
-  if (!status && !update && ((relink && (!registered || !kraken)) ||
+  // A title real Kraken Mount registered (its cache, no mount.lnk, no
+  // installed copy) is adopted: build our cache and register it again.
+  bool adopt = false;
+  if (!status && !update && !relink && registered && !managed) {
+    bool legacy_busy = false;
+    adopt = sm_takeover_kraken_adoptable(title_id, &legacy_busy);
+    if (legacy_busy) {
+      status = EBUSY;
+      error = "kraken_legacy_mount_busy";
+    } else if (adopt) {
+      log_debug("  [TAKEOVER] %s: adopting the title registered by Kraken Mount",
+                title_id);
+    }
+  }
+  if (!status && !update && !adopt && ((relink && (!registered || !kraken)) ||
       (managed && !kraken) ||
       (registered && (!kraken || (!relink && strcmp(source, base_path) != 0))))) {
     status = EEXIST;
@@ -4254,7 +4291,8 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
       const char *name = base.title_name[0] ? base.title_name : title_id;
       if (registered && !refresh_metadata && has_appmeta_data(title_id))
         cache_game_entry(cache, title_id, name);
-      else if (!sm_install_mount_game(cache, title_id, name, registered, refresh_metadata)) {
+      else if (!sm_install_mount_game(cache, title_id, name, registered && !adopt,
+                                      refresh_metadata)) {
         status = errno ? errno : EIO;
         if (status != ECANCELED)
           error = "kraken_base_invalid";
@@ -4269,6 +4307,7 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
     log_debug("  [KRAKEN] requested mount stopped: %s status=%d (%s)",
               source, status, operation_error_message(status, error));
   finish_storage_job(job_id, status, false, error);
+  sm_kraken_auto_job_finished(source, status, error);
 }
 
 static void *storage_job_thread_main(void *arg) {
@@ -4806,6 +4845,8 @@ static void handle_package_mount(struct MHD_Connection *connection,
   if (!error && sm_shellcore_title_is_protected(info.title_id))
     error = "game_active";
   strlcpy(package.physical_path, source, sizeof(package.physical_path));
+  // An explicit mount retries a package the automatic mount gave up on.
+  sm_kraken_auto_forget_failure(source);
   storage_job_snapshot_t accepted;
   status = error ? EBUSY : launch_storage_job(info.title_id, &package, "",
       GAME_STORAGE_MOUNT_PACKAGE, false, &accepted, &error);
@@ -4813,6 +4854,38 @@ static void handle_package_mount(struct MHD_Connection *connection,
     send_operation_error_response(connection, status, error);
   else
     send_storage_job_response(connection, 202, &accepted);
+}
+
+// Automatic mounting: the same storage job as POST /api/v1/packages/mount
+// for a base PKG, without the HTTP request.
+int sm_api_service_start_kraken_mount(const char *path, const char **error_out) {
+  *error_out = NULL;
+  char source[MAX_PATH];
+  int status = resolve_package_path(path, source, false);
+  if (status != 0)
+    return status;
+  sm_pkg_info_t info;
+  errno = 0;
+  if (!sm_kraken_is_package(source) || !sm_pkg_parse_file(source, NULL, &info) ||
+      info.pkg_kind != PKG_KIND_BASE || !sm_kraken_can_mount(&info)) {
+    *error_out = errno == EAGAIN ? "kraken_sources_changed" : "kraken_base_invalid";
+    return errno == EAGAIN ? EAGAIN : EINVAL;
+  }
+  const char *error = runtime_mutation_block_reason();
+  if (!error && sm_shellcore_title_is_protected(info.title_id))
+    error = "game_active";
+  if (error) {
+    *error_out = error;
+    return EBUSY;
+  }
+  game_source_info_t package = {
+      .source_type = "kraken",
+  };
+  strlcpy(package.physical_path, source, sizeof(package.physical_path));
+  storage_job_snapshot_t accepted;
+  return launch_storage_job(info.title_id, &package, "",
+                            GAME_STORAGE_MOUNT_PACKAGE, false, &accepted,
+                            error_out);
 }
 
 static void handle_source_install(struct MHD_Connection *connection, struct json_object *request) {
@@ -6374,6 +6447,8 @@ static enum MHD_Result handle_http_request(
       queued = handle_game_icon(connection);
     else if (strcmp(url, SM_API_ROUTE_PACKAGE_ICON) == 0)
       queued = handle_package_icon(connection);
+    else if (strcmp(url, SM_API_ROUTE_OWNERSHIP) == 0)
+      queued = handle_ownership(connection);
     else
       queued = send_error_response(connection, 404, ENOENT,
                                    "unknown API route");

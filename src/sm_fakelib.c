@@ -15,6 +15,7 @@
 #include "sm_scan.h"
 #include "sm_types.h"
 #include "sm_time.h"
+#include "sm_unimount_logic.h"
 
 #include <pthread.h>
 #include <sys/time.h>
@@ -1032,6 +1033,23 @@ static bool compute_fakelib_signature(const char *source_path, uint32_t flags,
   return true;
 }
 
+// PR #200 rule: libSceAmpr.sprx is replaced only by a build of the same
+// runtime, so an upstream ampr_emu never overwrites a game's ampr-emu-ng.
+// Fingerprint and copy apply the same answer, keeping their counts equal.
+static bool emulator_runtime_matches(const char *name, const char *source_file,
+                                     const char *emulator_file, bool log) {
+  if (strcasecmp(name, "libSceAmpr.sprx") != 0)
+    return true;
+  int source_ng = sm_ampr_file_is_ng(source_file);
+  int emulator_ng = sm_ampr_file_is_ng(emulator_file);
+  bool allowed =
+      sm_ampr_emulator_replacement_allowed(name, source_ng, emulator_ng);
+  if (!allowed && log)
+    log_debug("  [FAKELIB] keeping %s: emulator %s is a different AMPR runtime",
+              source_file, emulator_file);
+  return allowed;
+}
+
 static bool compute_emulator_files_signature(
     const char *emulators_path, const char *source_path,
     const char *higher_priority_path,
@@ -1107,6 +1125,9 @@ static bool compute_emulator_files_signature(
         emulator_st.st_ino == source_st.st_ino) {
       continue;
     }
+    if (!emulator_runtime_matches(entry->d_name, source_file, emulator_file,
+                                  false))
+      continue;
     cache_signature_add(signature, entry->d_name, &emulator_st);
     (*matching_count_out)++;
   }
@@ -1407,6 +1428,9 @@ static bool copy_emulator_files_to_cache(const char *emulators_path,
         emulator_st.st_ino == source_st.st_ino) {
       continue;
     }
+    if (!emulator_runtime_matches(entry->d_name, source_file, emulator_file,
+                                  true))
+      continue;
     if (copy_file_with_mode(emulator_file, cache_file, 0777) != 0) {
       ok = false;
       break;
@@ -2122,6 +2146,73 @@ static bool cleanup_ppr_backport_fakelib(const char *title_id,
   return true;
 }
 
+#define AMPR_NG_OVERLAY_ROOT "/data/shadowmount/ampr-ng"
+
+// Folder games packed with ampr_zstd.index only run with AMPR-emu-NG. Build
+// <root>/<TID>/fakelib from the resolved fakelib (if any) and put an
+// AMPR-emu-NG libSceAmpr.sprx in it. A fakelib that already ships one, and
+// LZ4-only folders (ampr_assets.index), are left as they are.
+static bool prepare_ampr_ng_overlay(const char *title_id, const char *game_path,
+                                    const char *source_path,
+                                    const runtime_config_t *cfg,
+                                    char overlay[MAX_PATH]) {
+  int has_zstd = directory_entry_exists(game_path, "ampr_zstd.index");
+  if (!sm_ampr_ng_folder_needs_injection(cfg->kraken_inject_ampr_enabled,
+                                         sm_kraken_is_cache(game_path),
+                                         has_zstd > 0))
+    return false;
+  char existing[MAX_PATH];
+  if (source_path &&
+      snprintf(existing, sizeof(existing), "%s/libSceAmpr.sprx", source_path) <
+          (int)sizeof(existing) &&
+      sm_ampr_file_is_ng(existing) == 1)
+    return false;
+
+  char root[MAX_PATH], temp_root[MAX_PATH], temp_fakelib[MAX_PATH], ampr[MAX_PATH];
+  int root_len = snprintf(root, sizeof(root), "%s/%s", AMPR_NG_OVERLAY_ROOT, title_id);
+  int temp_len = snprintf(temp_root, sizeof(temp_root), "%s.tmp", root);
+  int temp_lib_len = snprintf(temp_fakelib, sizeof(temp_fakelib), "%s/fakelib", temp_root);
+  int overlay_len = snprintf(overlay, MAX_PATH, "%s/fakelib", root);
+  if (root_len <= 0 || (size_t)root_len >= sizeof(root) || temp_len <= 0 ||
+      (size_t)temp_len >= sizeof(temp_root) || temp_lib_len <= 0 ||
+      (size_t)temp_lib_len >= sizeof(temp_fakelib) || overlay_len <= 0 ||
+      overlay_len >= MAX_PATH)
+    return false;
+  if ((mkdir(AMPR_NG_OVERLAY_ROOT, 0777) != 0 && errno != EEXIST)) {
+    log_debug("  [FAKELIB] AMPR-emu-NG overlay root unavailable: %s",
+              strerror(errno));
+    return false;
+  }
+
+  const char *emulators =
+      cfg->update_emulators_enabled ? cfg->emulators_path : NULL;
+  if (cache_root_is_mounted(root)) {
+    // Still mounted by an earlier session: refresh only the runtime file.
+    if (snprintf(ampr, sizeof(ampr), "%s/libSceAmpr.sprx", overlay) >= (int)sizeof(ampr) ||
+        !sm_kraken_install_ampr(ampr, emulators, title_id))
+      return false;
+    log_debug("  [FAKELIB] AMPR-emu-NG overlay reused for %s (ampr_zstd.index)",
+              title_id);
+    return true;
+  }
+  bool built = remove_cache_tree(temp_root) && mkdir(temp_root, 0777) == 0 &&
+               (source_path ? copy_fakelib_source(source_path, temp_fakelib, 0)
+                            : mkdir(temp_fakelib, 0777) == 0) &&
+               snprintf(ampr, sizeof(ampr), "%s/libSceAmpr.sprx", temp_fakelib) <
+                   (int)sizeof(ampr) &&
+               sm_kraken_install_ampr(ampr, emulators, title_id) &&
+               remove_cache_tree(root) && rename(temp_root, root) == 0;
+  if (!built) {
+    log_debug("  [FAKELIB] AMPR-emu-NG overlay failed for %s: %s", title_id,
+              strerror(errno));
+    (void)remove_cache_tree(temp_root);
+    return false;
+  }
+  log_debug("  [FAKELIB] AMPR-emu-NG injected for %s (ampr_zstd.index): %s",
+            title_id, overlay);
+  return true;
+}
+
 static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
                                           bool notify_user) {
   if (!title_id || !is_supported_game_title_id(title_id)) {
@@ -2259,6 +2350,15 @@ static bool mount_fakelib_for_game_locked(pid_t pid, const char *title_id,
     log_debug("  [FAKELIB] combined cache unavailable for %s; "
               "skipping global fakelib",
               title_id);
+  }
+
+  char ampr_overlay[MAX_PATH];
+  if (managed_title && !kraken &&
+      prepare_ampr_ng_overlay(title_id, managed_game_path,
+                              has_source ? source_path : NULL, &cfg,
+                              ampr_overlay)) {
+    source_path = ampr_overlay;
+    has_source = true;
   }
 
   bool emulators_only = false;

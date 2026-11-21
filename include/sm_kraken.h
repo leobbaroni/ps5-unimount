@@ -40,6 +40,10 @@ bool sm_kraken_launch_source(const char *cache, char source[MAX_PATH]);
 // Apply the shared AMPR and per-title stub policy before mounting fakelib.
 bool sm_kraken_refresh_runtime(const char *cache, const char *emulators_path,
                                bool playgo_stub_enabled);
+// Write the AMPR-emu-NG runtime to path: a valid shared module from
+// emulators_path (ampr-emu-ng/ first) or the bundled one. label is logged.
+bool sm_kraken_install_ampr(const char *path, const char *emulators_path,
+                            const char *label);
 // Whether this cache can use the bundled PlayGo stub.
 bool sm_kraken_has_bundled_playgo(const char *cache);
 // Report and recover a registered cache whose selected base path is stale.

@@ -151,6 +151,16 @@ bool sm_scan_tree_walk(const char *scan_root, const char *dir_path,
         return false;
       }
     }
+    size_t name_len = strlen(entry->d_name);
+    if (callbacks->on_package_file && is_regular && name_len > 4u &&
+        strcasecmp(entry->d_name + name_len - 4u, ".pkg") == 0 &&
+        !is_under_image_mount_base(full_path)) {
+      if (!callbacks->on_package_file(full_path, entry->d_name,
+                                      depth_from_root + 1u, ctx)) {
+        closedir(d);
+        return false;
+      }
+    }
 
     if (!is_dir)
       continue;

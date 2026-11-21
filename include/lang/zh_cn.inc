@@ -1,11 +1,11 @@
 static const char *const g_zh_cn[SM_L10N_COUNT] = {
     /* English: Go to Debug Settings */
     [SM_L10N_ACTION_DEBUG_SETTINGS] = "前往调试设置",
-    /* English: ShadowMount+ v%s\n© Drakmor and Community */
-    [SM_L10N_STARTUP] = "ShadowMount+ v%s\n© Drakmor 与社区",
-    /* English: ShadowMount+ v%s\n© Drakmor and Community\nControl: http://%s:%u */
+    /* English: UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community */
+    [SM_L10N_STARTUP] = "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor 与社区",
+    /* English: UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community\nControl: http://%s:%u */
     [SM_L10N_STARTUP_WEB] =
-        "ShadowMount+ v%s\n© Drakmor 与社区\n管理: http://%s:%u",
+        "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor 与社区\n管理: http://%s:%u",
     /* English: ShadowMount+: recursive_scan=1 is deprecated, using scan_depth=2. */
     [SM_L10N_RECURSIVE_SCAN_DEPRECATED] = "ShadowMount+: recursive_scan=1 已弃用，将使用 scan_depth=2。",
     /* English: ShadowMount+: scan depth %u enabled. */
@@ -80,4 +80,7 @@ static const char *const g_zh_cn[SM_L10N_COUNT] = {
     [SM_L10N_GAME_ERROR] = "游戏 %s 出错:\n%s",
     /* English: External drive %s connected */
     [SM_L10N_USB_CONNECTED] = "外部驱动器 %s 已连接。",
+    /* English: UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped. */
+    [SM_L10N_KRAKEN_TAKEOVER_WAITING] =
+        "UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped.",
 };

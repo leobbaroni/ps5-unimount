@@ -1,11 +1,11 @@
 static const char *const g_fi_fi[SM_L10N_COUNT] = {
     /* English: Go to Debug Settings */
     [SM_L10N_ACTION_DEBUG_SETTINGS] = "Siirry virheenkorjausasetuksiin",
-    /* English: ShadowMount+ v%s\n© Drakmor and Community */
-    [SM_L10N_STARTUP] = "ShadowMount+ v%s\n© Drakmor ja yhteisö",
-    /* English: ShadowMount+ v%s\n© Drakmor and Community\nControl: http://%s:%u */
+    /* English: UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community */
+    [SM_L10N_STARTUP] = "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor ja yhteisö",
+    /* English: UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor and Community\nControl: http://%s:%u */
     [SM_L10N_STARTUP_WEB] =
-        "ShadowMount+ v%s\n© Drakmor ja yhteisö\nHallinta: http://%s:%u",
+        "UniMount %s\nShadowMount+ %s · Kraken Mount %s\n© Drakmor ja yhteisö\nHallinta: http://%s:%u",
     /* English: ShadowMount+: recursive_scan=1 is deprecated, using scan_depth=2. */
     [SM_L10N_RECURSIVE_SCAN_DEPRECATED] = "ShadowMount+: recursive_scan=1 on vanhentunut, käytetään scan_depth=2.",
     /* English: ShadowMount+: scan depth %u enabled. */
@@ -80,4 +80,7 @@ static const char *const g_fi_fi[SM_L10N_COUNT] = {
     [SM_L10N_GAME_ERROR] = "Virhe pelissä %s:\n%s",
     /* English: External drive %s connected */
     [SM_L10N_USB_CONNECTED] = "Ulkoinen asema %s yhdistetty.",
+    /* English: UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped. */
+    [SM_L10N_KRAKEN_TAKEOVER_WAITING] =
+        "UniMount: Kraken Mount is still running a game.\nUniMount starts when Kraken Mount has stopped.",
 };

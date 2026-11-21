@@ -374,6 +374,29 @@ static void test_concurrent_writers(void) {
   puts("config migration: recovery, credentials, validation, manual edits and concurrent writers passed");
 }
 
+static void test_unimount_settings(void) {
+  put_file(CONFIG_FILE, "[config]\nversion=2\n");
+  assert(load_runtime_config());
+  runtime_config_t cfg = runtime_config();
+  assert(cfg.compat_kraken_api_enabled && cfg.compat_kraken_api_port == 8097u);
+  assert(cfg.kraken_auto_mount_enabled && cfg.kraken_inject_ampr_enabled);
+  put_file(CONFIG_FILE, "[config]\nversion=2\n[compat]\nkraken_api=off\n"
+                        "kraken_api_port=18097\n[kraken]\nauto_mount=off\ninject_ampr=no\n");
+  assert(load_runtime_config());
+  cfg = runtime_config();
+  assert(!cfg.compat_kraken_api_enabled && cfg.compat_kraken_api_port == 18097u);
+  assert(!cfg.kraken_auto_mount_enabled && !cfg.kraken_inject_ampr_enabled);
+  put_file(CONFIG_FILE, "[config]\nversion=2\n[compat]\nkraken_api_port=0\n");
+  assert(!load_runtime_config());
+  put_file(CONFIG_FILE, "[config]\nversion=2\n[kraken]\nauto_mount=maybe\n");
+  assert(!load_runtime_config());
+  put_file(CONFIG_FILE, "[config]\nversion=2\n");
+  assert(load_runtime_config());
+  cfg = runtime_config();
+  assert(cfg.compat_kraken_api_enabled && cfg.kraken_auto_mount_enabled);
+  puts("unimount settings: [compat] and [kraken] defaults, values and validation passed");
+}
+
 int main(void) {
   char directory[] = "/tmp/shadowmount-config-test-XXXXXX";
   assert(mkdtemp(directory));
@@ -391,6 +414,7 @@ int main(void) {
   test_editing();
   test_concurrent_writers();
   test_logging_flags();
+  test_unimount_settings();
   write_config(1);
   assert(load_runtime_config());
   runtime_config_t retained = runtime_config();

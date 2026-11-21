@@ -5,6 +5,12 @@ info:
   description: |
     HTTP/JSON API exposed by the ShadowMountPlus payload. The service has no
     authentication and should only be exposed on a trusted network.
+
+    UniMount additionally serves a Kraken Mount compatible subset on port 8097
+    (`[compat] kraken_api`, see docs/api.md "Kraken Mount compatible API"):
+    `GET /api/state`, `POST /api/rescan` (204), `POST /api/quit` (always 409)
+    and `GET /` (302 to this API's web UI). It is a separate listener and is
+    not described by this document.
 servers:
   - url: http://127.0.0.1:10101
     description: Local endpoint on the PS5; the default listener also accepts network connections
@@ -88,6 +94,45 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+
+  /api/v1/ownership:
+    options:
+      operationId: preflightOwnership
+      summary: CORS preflight
+      tags: [Service]
+      responses:
+        "204":
+          $ref: "#/components/responses/Preflight"
+    get:
+      operationId: getOwnership
+      summary: Get UniMount ownership, Kraken Mount takeover and auto-mount state
+      tags: [Service]
+      responses:
+        "200":
+          $ref: "#/components/responses/OwnershipSuccess"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: postOwnership
+      summary: Same as GET, for clients that only send JSON POST requests
+      tags: [Service]
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/OwnershipSuccess"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "411":
+          $ref: "#/components/responses/LengthRequired"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "431":
+          $ref: "#/components/responses/HeadersTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/images:
     options:
@@ -1588,6 +1633,16 @@ components:
           schema:
             $ref: "#/components/schemas/VersionResponse"
 
+    OwnershipSuccess:
+      description: UniMount ownership state
+      headers:
+        Access-Control-Allow-Origin:
+          $ref: "#/components/headers/AllowOrigin"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OwnershipResponse"
+
     ImagesSuccess:
       description: Complete image snapshot
       headers:
@@ -2027,7 +2082,7 @@ components:
     VersionResponse:
       type: object
       additionalProperties: false
-      required: [status, api_version, shadowmount_version, capabilities]
+      required: [status, api_version, shadowmount_version, product, unimount_version, kraken_mount_version, kraken_mount_revision, capabilities]
       properties:
         status:
           type: integer
@@ -2037,12 +2092,114 @@ components:
           const: 1
         shadowmount_version:
           type: string
+          description: ShadowMountPlus engine version tag
+        product:
+          type: string
+          const: UniMount
+        unimount_version:
+          type: string
+          description: UniMount version from the root VERSION file
+          example: 0.1.0
+        kraken_mount_version:
+          type: string
+          description: Kraken Mount release the bundled Kraken engine corresponds to
+          example: 0.3.0
+        kraken_mount_revision:
+          type: string
+          description: Short commit of the vendored Kraken Mount sources
+          example: e1e7845
         capabilities:
           type: array
           items:
             type: string
-            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan]
-          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan]
+            enum: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, pkg_mount, ownership]
+          example: [web_ui, storage_space, storage_eject, list_images, list_games, game_info, game_data_sizes, pkg_install, pkg_browser_stream, smb2_smb3, game_icon, mount_game, unmount_game, uninstall_game, uninstall_game_content, install_game_source, move_game_source, copy_game_source, delete_game_source, unpack_game_image, storage_job_status, storage_job_cancel, list_manual_sources, add_manual_source, remove_manual_source, manage_settings, read_debug_log, read_kernel_log, rescan, ownership]
+
+    OwnershipResponse:
+      type: object
+      additionalProperties: false
+      required: [status, product, version, pid, started, ownership_ready, previous_unclean, previous_pid, kraken_takeover, legacy_mounts, compat_listener, auto_mount]
+      properties:
+        status:
+          type: integer
+          const: 0
+        product:
+          type: string
+          const: UniMount
+        version:
+          type: string
+          example: 0.1.0
+        pid:
+          type: integer
+        started:
+          type: integer
+          description: Unix seconds when /data/shadowmount/owner.json was written; 0 before
+        ownership_ready:
+          type: boolean
+          description: Takeover finished; scanning and mounting may run
+        previous_unclean:
+          type: boolean
+          description: An owner.json from an instance that did not exit cleanly was found at startup
+        previous_pid:
+          type: integer
+        kraken_takeover:
+          type: object
+          additionalProperties: false
+          required: [state, version]
+          properties:
+            state:
+              type: string
+              enum: [pending, absent, taken_over, waiting_for_game, waiting_for_quit]
+            version:
+              type: [string, "null"]
+              description: Version reported by the Kraken Mount that answered on port 8097
+        legacy_mounts:
+          type: object
+          additionalProperties: false
+          required: [released, left]
+          properties:
+            released:
+              type: integer
+              minimum: 0
+            left:
+              type: integer
+              minimum: 0
+        compat_listener:
+          type: object
+          additionalProperties: false
+          required: [enabled, port, bound]
+          properties:
+            enabled:
+              type: boolean
+            port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            bound:
+              type: boolean
+        auto_mount:
+          type: object
+          additionalProperties: false
+          required: [enabled, queued, building, failed]
+          properties:
+            enabled:
+              type: boolean
+            queued:
+              type: integer
+              minimum: 0
+            building:
+              type: [string, "null"]
+            failed:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [path, error]
+                properties:
+                  path:
+                    type: string
+                  error:
+                    type: string
 
     StorageMount:
       type: object
@@ -2742,7 +2899,7 @@ components:
     OperationErrorReason:
       type: string
       description: Stable reason code for localized operation errors; empty for generic errno failures.
-      enum: ["", rest_mode, game_active, install_pending, runtime_prepared, scanner_busy, runtime_busy, title_unmount_busy, image_unmount_busy, unpack_mounted, storage_busy, storage_unavailable, usb_disk_busy, usb_mount_busy, usb_partition_busy, usb_image_busy, usb_mount_changed, usb_eject_unconfirmed, usb_eject_failed, pkg_invalid, pkg_base_missing, pkg_stream_lost, pkg_source_changed, pkg_already_installed, pkg_queued, pkg_queue_full, kraken_patch_invalid, kraken_decode_failed, kraken_base_missing, kraken_patch_source_missing, kraken_base_invalid, kraken_title_conflict, kraken_use_mount, kraken_sources_changed]
+      enum: ["", rest_mode, game_active, install_pending, runtime_prepared, scanner_busy, runtime_busy, title_unmount_busy, image_unmount_busy, unpack_mounted, storage_busy, storage_unavailable, usb_disk_busy, usb_mount_busy, usb_partition_busy, usb_image_busy, usb_mount_changed, usb_eject_unconfirmed, usb_eject_failed, pkg_invalid, pkg_base_missing, pkg_stream_lost, pkg_source_changed, pkg_already_installed, pkg_queued, pkg_queue_full, kraken_patch_invalid, kraken_decode_failed, kraken_base_missing, kraken_patch_source_missing, kraken_base_invalid, kraken_title_conflict, kraken_use_mount, kraken_sources_changed, kraken_legacy_mount_busy]
 
     PackageListing:
       type: object

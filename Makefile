@@ -3,12 +3,15 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
 VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+UNIMOUNT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+KRAKEN_MOUNT_REVISION := $(shell head -c 7 vendor/kraken/REVISION 2>/dev/null || echo unknown)
 
 # Compiler and dependency flags
 HOMEBREW_ROOT := $(PS5_PAYLOAD_SDK)/target/user/homebrew
 JSON_C_PREFIX := $(CURDIR)/.deps/json-c
 JSON_C_LIB := $(JSON_C_PREFIX)/lib/libjson-c.a
 JSON_C_OBJS := src/sm_api_service.o src/sm_appdb.o src/sm_gameinfo.o src/sm_kraken.o src/sm_pkg.o src/sm_config_file.o
+JSON_C_OBJS += src/sm_takeover.o src/sm_kraken_compat.o src/sm_kraken_auto.o src/sm_unimount_logic.o
 HOMEBREW_CFLAGS := -I$(JSON_C_PREFIX)/include -I$(HOMEBREW_ROOT)/include
 MHD_LIB := $(HOMEBREW_ROOT)/lib/libmicrohttpd.a
 PNG_LIB := $(HOMEBREW_ROOT)/lib/libpng16.a
@@ -17,6 +20,7 @@ ZLIB_LIB := $(HOMEBREW_ROOT)/lib/libz.a
 SMB_LIB := $(HOMEBREW_ROOT)/lib/libsmb2.a
 CFLAGS := -O3 -flto=thin -DNDEBUG -ffunction-sections -fdata-sections -Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes -Werror=strict-prototypes -Werror=missing-prototypes -D_BSD_SOURCE -std=gnu11 -Iinclude -Isrc
 CFLAGS += -DSHADOWMOUNT_VERSION=\"$(VERSION_TAG)\"
+CFLAGS += -DUNIMOUNT_VERSION=\"$(UNIMOUNT_VERSION)\" -DKRAKEN_MOUNT_REVISION=\"$(KRAKEN_MOUNT_REVISION)\"
 CFLAGS += -DSM_VFS_ENABLED
 CFLAGS += -I$(JSON_C_PREFIX)/include
 
@@ -95,6 +99,7 @@ src/main.o src/sm_image_index.o: CFLAGS += -DSHADOWMOUNT_BUILD_TIME=\"$(BUILD_TI
 src/main.o src/sm_image_index.o: FORCE
 
 src/sm_l10n.o: $(L10N_CATALOGS)
+src/sm_api_service.o src/sm_takeover.o src/sm_kraken_compat.o: VERSION
 src/sm_ampr_updater.o: src/sm_ampr_ca.inc
 src/sm_shellcore_offsets.o: src/sm_shellcore_offsets.inc
 
