@@ -21,6 +21,10 @@
      "last_launch": {"id": 36, "outcome": "spawn_failed", "at": "2026-11-21 17:11:30", "short_error": "CE-107750-0", "category": "permission"}},
     {"title_id": "PPSA90013", "title_name": "Kite Weather", "source_type": "folder", "path": "/data/homebrew/PPSA90013-app", "installed": true, "mounted": true, "version": "01.003.000", "has_patch": true, "dlc_count": 2, "backport_path": "/data/homebrew/backports/PPSA90013 Kite Weather"},
     {"title_id": "PPSA90014", "title_name": "Deep Field", "source_type": "image", "image_type": "exfatfs", "path": "/mnt/usb0/games/Deep Field.exfat", "size_bytes": 7516192768, "installed": true, "mounted": true, "version": "01.000.000",
-     "last_launch": {"id": 42, "outcome": "launch_in_progress", "at": "2026-11-21 20:15:40", "short_error": null, "category": null}}
+     "last_launch": {"id": 42, "outcome": "launch_in_progress", "at": "2026-11-21 20:15:40", "short_error": null, "category": null}},
+    {"title_id": "PPSA90015", "title_name": "Signal Fire", "source_type": "image", "image_type": "exfatfs", "path": "/data/homebrew/Signal Fire.exfat", "size_bytes": 5368709120, "installed": true, "mounted": false, "version": "01.000.000",
+     "last_launch": {"id": 35, "outcome": "observation_interrupted", "at": "2026-11-21 16:02:11", "short_error": null, "category": null}},
+    {"title_id": "PPSA90016", "title_name": "Cinder Road: Ballad of the Northern Light", "source_type": "image", "image_type": "exfatfs", "path": "/mnt/usb0/games/Cinder Road.exfat", "size_bytes": 36507222016, "installed": true, "mounted": false, "version": "01.010.000",
+     "last_launch": {"id": 34, "outcome": "exited_normally", "at": "2026-11-21 03:41:00", "short_error": null, "category": null}}
   ]
 }

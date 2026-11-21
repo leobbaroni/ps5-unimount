@@ -360,6 +360,11 @@ def settle_launches() -> None:
 def list_games(body: dict) -> dict:
     settle_launches()
     s = state()
+    # The fixture's in-progress launch is "still being observed": keep its time fresh (console local time).
+    for game in s["games"]:
+        ll = game.get("last_launch")
+        if ll and ll.get("outcome") == "launch_in_progress" and game["title_id"] not in s["launches"]:
+            ll["at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 3600 - 15))
     games = []
     legacy = s["scenario"] == "legacy"
     for game in s["games"]:
@@ -374,6 +379,8 @@ def list_games(body: dict) -> dict:
             item["size_status"] = 0
             item["size_bytes"] = 3221225472 + _seed(item["title_id"]) % 2147483648
         item.pop("playgo_stub_enabled", None)
+        if item.get("last_launch"):
+            item["last_launch"]["observation_interrupted"] = item["last_launch"]["outcome"] == "observation_interrupted"
         games.append(item)
     return {"count": len(games), "size_included": bool(body.get("include_size")), "games": games}
 
@@ -534,7 +541,7 @@ def launch_record(game: dict, ll: dict) -> dict:
     offsets = {"mounted": 0, "registered": 40, "launch_requested": 60, "sandbox_ready": 900, "process_started": 1300,
                "running_confirmed": 21300, "exited": 5500}
     reach = {"running": 6, "exited_normally": 7, "crashed": 5, "spawn_failed": 3, "mount_failed": 0,
-             "launch_in_progress": 3, "exited_early": 5}.get(outcome, 0)
+             "launch_in_progress": 3, "exited_early": 5, "observation_interrupted": 3}.get(outcome, 0)
     for i, key in enumerate(order[:reach]):
         stages[key] = dict(ok)
     for key in order:
@@ -574,7 +581,7 @@ def launch_record(game: dict, ll: dict) -> dict:
     process = {"pid": 4412, "app_id": "0x60000012", "alive_seconds": 4.2} if outcome == "crashed" else None
     return {"id": ll["id"], "title_id": game["title_id"], "managed": True, "at": ll["at"], "at_unix_ms": base_ms,
             "process": process, "outcome": outcome,
-            "observation_interrupted": False, "short_error": ll.get("short_error"), "launch_attempts": 1,
+            "observation_interrupted": outcome == "observation_interrupted", "short_error": ll.get("short_error"), "launch_attempts": 1,
             "stages": stages, "mount": None, "environment": {"kstuff_loaded": True,
             "shellcore_hooks_installed": True, "console_firmware": "13.60", "required_firmware": "7.00"},
             "native_errors": native, "diagnosis": diagnosis,
