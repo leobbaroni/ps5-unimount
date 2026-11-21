@@ -110,7 +110,7 @@ go through the Kraken path.
   keys, cross as a pointer click, circle as Escape (after which the system closes the browser).
   Square, triangle, L1, R1 and Options were not measured.
 - Layout on the console's own browser, released build: the page was opened there and reported its
-  own geometry. For each of the three titles, including a 40-character title and with the control
+  own geometry (the method is now `tools/hwtest/layout_probe.py`). For each of the three titles, including a 40-character title and with the control
   legend showing, the document height equalled the 700 px viewport, the top bar stayed at the top
   and nothing scrolled; no script error was raised. Nobody looked at the TV, so this is measured
   geometry, not a visual check.
@@ -136,6 +136,23 @@ progress" (the payload had been replaced seconds after that launch).
   `observation_resumed` entry and reached `running`; the game's mount stayed in place (`unmount
   deferred … Device busy`). After the game was closed the record ended `exited_normally` with
   `exit not observed directly`, and the layers were released.
+
+## Repeating these checks
+
+The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
+
+- `console_check.py --console <host> status` prints the running version, ownership state, the
+  running game, the error-history count and each title's last launch.
+- `console_check.py --console <host> deploy build/unimount.elf` uploads the build into a PS5 Payload
+  Manager slot, loads it and waits for it to answer.
+- `console_check.py --console <host> launch <TITLEID>` runs the launch test from A and B: it passes
+  only when the record went `running` then `exited_normally` and the error history did not grow.
+- `layout_probe.py --console http://<host>:10101` measures the interface in the console's browser;
+  open its address there with `console_check.py --console <host> helper browse http://<pc>:8766/`,
+  which needs the `unimount-hwtest` helper payload loaded.
+
+Both scripts were checked against the development mock server only; the commands they wrap are
+the ones recorded above.
 
 ## Not validated
 
