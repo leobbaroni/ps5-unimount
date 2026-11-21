@@ -142,17 +142,22 @@
   .no-flex-gap .row > * { margin-bottom: .5rem; }
 
   /* Library: hero */
-  .library { padding: 0 var(--gutter); }
+  .library { padding: 0 var(--gutter); overflow: hidden; }
   .hero { flex: none; padding-top: .625rem; }
   .hero-title, .facts { max-width: 46rem; }
-  .hero-title { font-size: 5rem; font-weight: 700; line-height: 1; letter-spacing: -.03em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-wrap: balance; overflow-wrap: anywhere; }
-  .hero-title.long { font-size: 4rem; line-height: 1.02; }
-  .hero-title.longer2 { font-size: 3.25rem; line-height: 1.04; letter-spacing: -.02em; }
-  .hero-title.longer { font-size: 2.75rem; line-height: 1.06; letter-spacing: -.02em; }
+  .hero-title { font-size: 5rem; font-weight: 700; line-height: 1.12; padding-bottom: .04em; letter-spacing: -.03em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-wrap: balance; overflow-wrap: anywhere; }
+  .hero-title.long { font-size: 4rem; }
+  .hero-title.longer2 { font-size: 3.25rem; letter-spacing: -.02em; }
+  .hero-title.longer { font-size: 2.75rem; letter-spacing: -.02em; }
+  .library.compact .card { width: 13rem; }
+  .library.compact .card .thumb { height: 7.3125rem; }
+  .library.compact .tracker { margin-top: .75rem; }
+  .library.compact .actions { margin-top: .75rem; }
+  .library.compact .actions .btn { min-height: 2.75rem; margin-bottom: .375rem; }
   .facts { margin-top: .5rem; font-size: 1.375rem; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .facts .sep { margin: 0 .5rem; color: var(--ink-2); font-weight: 400; }
   .tracker { display: flex; margin: 1rem 0 0; padding: 0; list-style: none; }
-  .stage { width: 5.75rem; margin-right: .375rem; text-align: center; }
+  .stage { width: 6.25rem; margin-right: .375rem; text-align: center; }
   [dir="rtl"] .stage { margin-right: 0; margin-left: .375rem; }
   .seg { display: flex; align-items: center; justify-content: center; height: 1.5rem; border: 2px solid var(--ink); border-radius: 4px; background: rgba(0,0,0,.45); color: #000; }
   .seg .i { width: 1.1rem; height: 1.1rem; stroke-width: 2.5; }
@@ -165,8 +170,8 @@
   .stage.none .seg { border-color: var(--ink-3); }
   .stage-label { display: block; margin-top: .375rem; font-size: 1rem; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stage.done .stage-label, .stage.failed .stage-label, .stage.pending .stage-label { color: var(--ink); }
-  .stage-note { display: block; font-size: 1rem; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .state-sentence { margin-top: .625rem; font-size: 1.25rem; line-height: 1.3; max-width: 44rem; }
+  .stage-note { display: block; font-size: 1rem; line-height: 1.2; color: var(--ink); overflow-wrap: anywhere; }
+  .state-sentence { margin-top: .625rem; font-size: 1.25rem; line-height: 1.3; max-width: 44rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .state-sentence .code { display: inline-block; padding: 0 .375rem; border-radius: 4px; background: var(--red); color: #fff; font-weight: 700; }
   .actions { display: flex; flex-wrap: wrap; margin-top: 1rem; }
   .actions .btn { min-width: 8.5rem; min-height: 3rem; margin: 0 1rem .5rem 0; font-size: 1.25rem; }
@@ -176,7 +181,7 @@
   @keyframes restamp { from { opacity: .35; } to { opacity: 1; } }
 
   /* Library: shelf */
-  .shelf-zone { margin-top: auto; flex: none; }
+  .shelf-zone { margin-top: auto; flex: none; padding-bottom: .5rem; }
   .shelf-head { display: flex; align-items: center; min-height: 2.75rem; }
   .shelf-head h2 { font-size: 1.375rem; margin-right: auto; white-space: nowrap; }
   [dir="rtl"] .shelf-head h2 { margin-right: 0; margin-left: auto; }
@@ -216,6 +221,8 @@
   .shelf-page.prev { left: calc(-1 * var(--gutter) + .5rem); }
   .shelf-page.next { right: calc(-1 * var(--gutter) + .5rem); }
   [dir="rtl"] .shelf-page .i { transform: scaleX(-1); }
+  [dir="rtl"] .shelf-page.prev { left: auto; right: calc(-1 * var(--gutter) + .5rem); }
+  [dir="rtl"] .shelf-page.next { right: auto; left: calc(-1 * var(--gutter) + .5rem); }
   .shelf-empty { padding: 1.5rem 0 2rem; color: var(--ink-2); font-size: 1.125rem; }
 
   .library-empty { max-width: 50rem; padding-top: 3rem; }
@@ -336,9 +343,11 @@
   .job.strip .job-stats strong { margin-left: 0; }
   .job.strip .btn { flex: none; margin: 0; min-height: 2.25rem; }
   @media (max-width: 1420px) {
-    .job.strip .meter, .job.strip .job-stats > span:not(:last-of-type), .job.strip .job-stats > span:last-of-type > span { display: none; }
+    .job.strip .meter { width: 3rem; margin: 0 .5rem; }
+    .job.strip .job-stats > span:not(:last-of-type), .job.strip .job-stats > span:last-of-type > span { display: none; }
     .shelf-tools input { width: 10rem; }
   }
+  @media (max-width: 1300px) { .job.strip .meter { display: none; } }
   .job.docked { position: static; width: auto; max-width: none; margin-top: 1.5rem; padding: .875rem 1rem; }
   .subnav .job.docked .route, .subnav .job.docked #jobSpeed, .subnav .job.docked #jobElapsed { display: none; }
   .subnav .job.docked .job-head { display: block; }
@@ -398,7 +407,8 @@
     body.view-other .art { display: none; }
     .library { padding: 0 var(--gutter); }
     .hero { padding-top: calc(60vw - 8.5rem); max-width: none; }
-    .hero-title, .hero-title.long, .hero-title.longer { font-size: 2.25rem; }
+    .hero-title, .hero-title.long, .hero-title.longer, .hero-title.longer2 { font-size: 2.25rem !important; }
+    .library { overflow: visible; }
     .facts { font-size: 1rem; white-space: normal; }
     .tracker { flex-wrap: nowrap; }
     .stage { flex: 1 1 0; width: auto; min-width: 0; }
@@ -411,7 +421,7 @@
     .shelf-head h2 { width: 100%; margin-bottom: .5rem; }
     .job-strip-slot { order: -1; width: 100%; flex: 1 1 100%; margin: 0 0 .75rem; justify-content: stretch; }
     .job.strip { flex: 1 1 auto; max-width: none; }
-    .job.strip .meter { width: 3rem; }
+    .job.strip .meter { display: block; flex: 1 1 auto; width: auto; min-width: 2rem; }
     .shelf-page { display: none; }
     .shelf-tools { width: 100%; }
     .shelf-tools > * { margin-left: 0; margin-right: .5rem; }
@@ -1458,6 +1468,9 @@
           errorHistoryUnreadable: "The console's error history could not be read. {error}",
           configIniOnly: "These values come from config.ini on the console. Edit [compat], [kraken] and [diagnostics] there; this page shows what the payload reports.",
           on: "On",
+          sentenceInterrupted: "The last launch was not observed to the end (UniMount restarted).",
+          sentenceNotObservedEnd: "The last launch was not observed to the end.",
+          outcomeInterrupted: "Not observed to the end",
           notReported: "This engine version does not report these settings.",
           launchGame: "Launch",
           launchAgain: "Launch again",
@@ -3136,12 +3149,15 @@
     // All four are GET (ownership also accepts POST {}); query strings carry title_id/limit.
     routes: { system: "/system", ownership: "/ownership", launches: "/diagnostics/launches", errors: "/diagnostics/errors" },
     failureOutcomes: ["mount_failed", "spawn_failed", "exited_early", "crashed", "launch_not_observed"],
+    // Anything else (observation_interrupted, or an outcome this page does not know) is shown as not observed.
+    knownOutcomes: ["running", "launch_in_progress", "exited_normally", "mount_failed", "spawn_failed", "exited_early", "crashed", "launch_not_observed"],
     stageOrder: ["mounted", "registered", "launch_requested", "sandbox_ready", "process_started", "running_confirmed", "exited"],
     lastLaunch(game) {
       const value = game && game.last_launch;
       if (!value || typeof value !== "object") return null;
       return {
-        id: value.id, outcome: String(value.outcome || ""), at: value.at || value.at_text || "",
+        // observation_interrupted may arrive as the outcome or as the additive boolean.
+        id: value.id, outcome: value.observation_interrupted === true ? "observation_interrupted" : String(value.outcome || ""), at: value.at || value.at_text || "",
         shortError: value.short_error || value.native_code || "", category: value.category || ""
       };
     },
@@ -3537,6 +3553,16 @@
     return !game.installed_pkg && Boolean(game.image_backed);
   }
 
+  // Age of a launch record. "at" is console wall-clock time; the API's local-time header uses the same fields.
+  function launchAgeMs(launch) {
+    const match = String(launch.at || "").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+    if (!match) return 0;
+    const at = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6]);
+    const clock = state.consoleClock;
+    const now = clock ? clock.time + performance.now() - clock.receivedAt : Date.now() - new Date().getTimezoneOffset() * 60000;
+    return now - at;
+  }
+
   function canLaunch() { return state.capabilities.includes("launch_game"); }
   function canClose() { return state.capabilities.includes("close_game"); }
 
@@ -3557,7 +3583,13 @@
     const registered = Boolean(game.installed);
     const confirmed = Boolean(launch && launch.outcome === "running");
     const processSeen = Boolean(state.running && state.running.running && state.running.title_id === game.title_id);
-    const launching = !confirmed && (Boolean(launch && launch.outcome === "launch_in_progress") || launchRequested(game) || processSeen);
+    // A record that was never finalised must not read "Starting" forever: trust launch_in_progress only
+    // while the engine still reports this title running, or for about a minute after the request.
+    const staleProgress = Boolean(launch && launch.outcome === "launch_in_progress" && !processSeen && !launchRequested(game) &&
+      state.running !== null && launchAgeMs(launch) > 60000);
+    const unobserved = Boolean(launch) && !processSeen && !launchRequested(game) &&
+      (launch.outcome === "observation_interrupted" || Adapt.knownOutcomes.indexOf(launch.outcome) < 0 || staleProgress);
+    const launching = !confirmed && !unobserved && (Boolean(launch && launch.outcome === "launch_in_progress") || launchRequested(game) || processSeen);
     const stage = { found: "done", prepared: "none", mounted: "none", registered: registered ? "done" : "none", running: "none" };
     const notes = {};
     if (missing) { stage.found = "failed"; notes.found = t("stageMissing"); }
@@ -3590,6 +3622,7 @@
         stage.mounted = "pending"; notes.mounted = t("stageMounting");
       } else { stage.running = "pending"; notes.running = t("stageRequested"); }
     } else if (launch && Adapt.failureOutcomes.includes(launch.outcome) && launch.outcome !== "mount_failed") stage.running = "failed";
+    if (unobserved) notes.running = t("stageNotObserved");
     if (stage.running === "none" && !notes.running) notes.running = launchTracked ? "" : t("stageNotObserved");
 
     let word, sentence, tone = "";
@@ -3607,6 +3640,9 @@
     } else if (processSeen) {
       word = t("wordStarting");
       sentence = t("sentenceProcessSeen");
+    } else if (unobserved) {
+      word = t("stageNotObserved");
+      sentence = t(launch.outcome === "observation_interrupted" ? "sentenceInterrupted" : "sentenceNotObservedEnd");
     } else if (launching) {
       word = t("wordStarting");
       sentence = t("sentenceStarting");
@@ -3845,6 +3881,7 @@
     renderTypeCounts();
     renderShelfHeading(games);
     updateCardFocusability();
+    if (changed) revealSelected();
     updateShelfPaging();
   }
 
@@ -3933,6 +3970,7 @@
     } else sentence.textContent = model.sentence;
     if (model.tone === "failed" && (model.failedLaunch || model.stage.prepared === "failed")) sentence.append(document.createTextNode(` ${t("seeDiagnostics")}`));
     renderActions(game, model);
+    fitLibrary();
     if (restamp && !reducedMotion()) {
       hero.classList.remove("restamp");
       void hero.offsetWidth;
@@ -4033,6 +4071,44 @@
     }
   }
 
+  function phoneLayout() {
+    return Boolean(window.matchMedia && window.matchMedia("(max-width: 900px), (max-aspect-ratio: 1/1)").matches);
+  }
+
+  // The Library is a fixed-height shell: the title steps down (then cards compact) until hero and shelf fit.
+  function fitLibrary() {
+    const view = $("view-library"), title = $("heroTitle");
+    if (!title) return;
+    if (phoneLayout() || view.hidden || $("hero").hidden) { title.style.fontSize = ""; view.classList.remove("compact"); return; }
+    // Fits when nothing overflows the shell and the title is shown whole (no clamped ellipsis).
+    // A clamped title is a whole line taller than its box; descender room is a few pixels.
+    const fits = () => view.scrollHeight <= view.clientHeight + 1 &&
+      title.scrollHeight <= title.clientHeight + parseFloat(getComputedStyle(title).fontSize) * .5;
+    const steps = title.textContent.length > 16 ? [4, 3.5, 3, 2.75, 2.5, 2.25, 2] : [5, 4.5, 4, 3.5, 3, 2.5, 2];
+    // Prefer a larger title over full-size covers: try each size with normal, then compact covers.
+    for (const size of steps) {
+      for (const compact of [false, true]) {
+        view.classList.toggle("compact", compact);
+        title.style.fontSize = `${size}rem`;
+        if (fits()) { view.scrollTop = 0; revealSelected(); return; }
+      }
+    }
+    view.scrollTop = 0;
+    revealSelected();
+  }
+
+  // Keep the selected cover inside the visible shelf, e.g. after a state change re-orders it.
+  function revealSelected() {
+    const shelf = $("shelf");
+    const card = Array.from(shelf.querySelectorAll(".card")).find(item => item.dataset.titleId === state.selectedId);
+    if (!card) return;
+    const box = card.getBoundingClientRect(), bounds = shelf.getBoundingClientRect();
+    const margin = Math.min(bounds.width * .15, 240);
+    if (box.right > bounds.right - margin) shelf.scrollLeft += box.right - bounds.right + margin;
+    else if (box.left < bounds.left + margin) shelf.scrollLeft += box.left - bounds.left - margin;
+    updateShelfPaging();
+  }
+
   function focusPrimaryAction() {
     const actions = $("heroActions");
     focusControl(actions.querySelector(".primary") || actions.firstElementChild);
@@ -4046,6 +4122,7 @@
     $("shelf").querySelectorAll(".card").forEach(card => card.classList.toggle("selected", card.dataset.titleId === titleId));
     updateCardFocusability();
     renderShelfHeading();
+    if (!$("shelf").contains(document.activeElement)) revealSelected();
     renderHero(game, changed && !options.quiet);
     showArt(game);
   }
@@ -4277,6 +4354,7 @@
     const active = Boolean(job && job.active && Number(job.job_id) > 0);
     const restoreFocus = !active && bar.contains(document.activeElement);
     bar.hidden = !active;
+    if (bar.classList.contains("strip")) setTimeout(fitLibrary, 0);
     document.body.classList.toggle("job-active", active);
     const wasActive = Boolean(previous && previous.active);
     if (wasActive !== active || (job && previous && job.title_id !== previous.title_id)) {
@@ -4317,8 +4395,9 @@
     $("jobSpeed").textContent = job.speed_bytes_per_second > 0 ? `${formatBytes(Number(job.speed_bytes_per_second))}${t("perSecond")}` : "—";
     $("jobElapsed").textContent = formatDuration(job.elapsed_ms);
     const remaining = storageJobRemainingMs(job);
-    $("jobRemaining").textContent = remaining === null ? "—" : `≈ ${formatDuration(remaining)}`;
-    $("jobPercent").textContent = measuring ? "" : `${percent.toFixed(percent < 10 && percent > 0 ? 1 : 0)}%`;
+    $("jobRemaining").textContent = remaining === null ? "" : `≈ ${formatDuration(remaining)}`;
+    $("jobRemaining").parentElement.hidden = remaining === null;
+    $("jobPercent").textContent = measuring ? storageJobStateLabel(job) : `${percent.toFixed(percent < 10 && percent > 0 ? 1 : 0)}%`;
     $("jobCancel").disabled = !job.cancellable || job.cancel_requested;
     $("jobCancel").textContent = job.cancel_requested ? t("cancelling") : t("cancel");
     note.textContent = [$("jobTitle").textContent, stateText, measuring ? "" : $("jobPercent").textContent].filter(Boolean).join(" · ");
@@ -4932,8 +5011,9 @@
 
   function outcomeLabel(outcome) {
     const key = { running: "wordRunning", launch_in_progress: "wordStarting", exited_normally: "outcomeExited", mount_failed: "wordMountFailed",
-      spawn_failed: "outcomeSpawnFailed", exited_early: "outcomeExitedEarly", crashed: "outcomeCrashed", launch_not_observed: "outcomeNotObserved" }[outcome];
-    return key ? t(key) : outcome;
+      spawn_failed: "outcomeSpawnFailed", exited_early: "outcomeExitedEarly", crashed: "outcomeCrashed", launch_not_observed: "outcomeNotObserved", observation_interrupted: "outcomeInterrupted" }[outcome];
+    // Unknown outcome strings are shown neutrally, never as progress, success or failure.
+    return key ? t(key) : t("stageNotObserved");
   }
 
   function renderGameDiagnostics(game, records) {
@@ -6671,6 +6751,7 @@
     if (bar.parentElement !== target) target.appendChild(bar);
     bar.classList.toggle("docked", Boolean(slot) && navigation.view !== "library");
     bar.classList.toggle("strip", Boolean(slot) && navigation.view === "library");
+    fitLibrary();
     $("storageJobNote").hidden = !bar.hidden && Boolean(slot) && slot.contains($("storageJobNote"));
   }
 
@@ -6768,7 +6849,11 @@
     // Focus events can be deferred while the window lacks system focus; select directly.
     if (item.classList && item.classList.contains("card") && item.dataset.titleId && item.dataset.titleId !== state.selectedId) selectGame(item.dataset.titleId);
     scrollIntoContainer(item);
-    if (document.body.scrollHeight > window.innerHeight) {
+    // Outside phones the page itself never scrolls; only the shelf and section panes do.
+    if (!phoneLayout()) {
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+      $("view-library").scrollTop = 0;
+    } else if (document.body.scrollHeight > window.innerHeight) {
       const box = item.getBoundingClientRect();
       if (box.bottom > window.innerHeight - 80) window.scrollBy(0, box.bottom - window.innerHeight + 80);
       else if (box.top < 16) window.scrollBy(0, box.top - 16);
@@ -6970,6 +7055,7 @@
   function renderLegend() {
     const legend = $("legend");
     replaceContent(legend);
+    setTimeout(fitLibrary, 0);
     const mode = navigation.input;
     const seen = navigation.seen;
     const topLevel = navigation.view === "library" && !activeDialog();
@@ -7341,7 +7427,7 @@
     navigation.padFrame = 0;
   });
   window.addEventListener("pageshow", startGamepad);
-  window.addEventListener("resize", placeJobBar);
+  window.addEventListener("resize", () => { placeJobBar(); fitLibrary(); });
   startGamepad();
 
   for (let temperature = 50; temperature <= 91; temperature += 1) {
