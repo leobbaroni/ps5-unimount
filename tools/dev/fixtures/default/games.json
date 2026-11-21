@@ -1,0 +1,26 @@
+{
+  "_comment": "Synthetic library for tools/dev/mock_api.py. Every title, id and path is invented.",
+  "games": [
+    {"title_id": "PPSA90001", "title_name": "Ember Hollow", "source_type": "image", "image_type": "exfatfs", "path": "/data/homebrew/Ember Hollow.exfat", "size_bytes": 9596567552, "installed": true, "mounted": true, "version": "01.006.000",
+     "last_launch": {"id": 41, "outcome": "running", "at": "2026-11-21 20:14:03", "short_error": null, "category": null}},
+    {"title_id": "PPSA90002", "title_name": "Tidewright", "source_type": "image", "image_type": "ufs", "path": "/data/homebrew/PPSA90002.ffpkg", "size_bytes": 217448448, "installed": true, "mounted": false, "version": "01.013.002",
+     "last_launch": {"id": 38, "outcome": "exited_normally", "at": "2026-11-20 18:56:05", "short_error": null, "category": null}},
+    {"title_id": "PPSA90003", "title_name": "Glass Orchard", "source_type": "folder", "path": "/mnt/usb0/games/PPSA90003-app", "installed": true, "mounted": true, "version": "01.000.000"},
+    {"title_id": "PPSA90004", "title_name": "Northbound Signal", "source_type": "image", "image_type": "exfatfs", "path": "/mnt/usb0/games/Northbound Signal.exfat", "size_bytes": 23622320128, "installed": true, "mounted": false, "version": "01.002.000",
+     "last_launch": {"id": 40, "outcome": "crashed", "at": "2026-11-21 19:02:44", "short_error": "CE-105779-9", "category": "corrupt_data"}},
+    {"title_id": "PPSA90005", "title_name": "Paper Lanterns", "source_type": "image", "image_type": "pfsc", "path": "/mnt/ext1/homebrew/Paper Lanterns.pfs", "size_bytes": 4294967296, "installed": true, "mounted": false, "version": "01.000.001",
+     "last_launch": {"id": 39, "outcome": "mount_failed", "at": "2026-11-21 18:40:12", "short_error": null, "category": "mount_failed"}},
+    {"title_id": "CUSA90006", "title_name": "Quiet Harbor", "platform": "ps4", "source_type": "folder", "path": "/mnt/usb1/ps4/CUSA90006", "installed": true, "mounted": false, "source_available": false, "can_manage_source": true, "version": "01.050.000"},
+    {"title_id": "PPSA90007", "title_name": "Lumen Drift", "source_type": "pkg", "path": "/mnt/usb0/packages/UP0000-PPSA90007_00-LUMENDRIFT000000.pkg", "size_bytes": 36507222016, "installed": false, "mounted": false, "image_backed": false, "can_manage_source": false, "version": "01.000.000", "kraken": true},
+    {"title_id": "PPSA90008", "title_name": "Moss and Mortar", "source_type": "folder", "path": "/mnt/usb0/incoming/PPSA90008-app", "installed": false, "mounted": false, "version": "01.001.000"},
+    {"title_id": "PPSA90009", "title_name": "Saltglass", "source_type": "pkg", "installed_pkg": true, "managed": false, "path": "/user/app/PPSA90009/app.pkg", "size_bytes": 51539607552, "installed": true, "mounted": false, "image_backed": false, "can_manage_source": false, "version": "01.004.000", "has_patch": true, "dlc_count": 1},
+    {"title_id": "PPSA90010", "title_name": "Orbit Relay", "source_type": "pkg", "path": "/data/pkgs/UP0000-PPSA90010_00-ORBITRELAY000000.pkg", "size_bytes": 12884901888, "installed": true, "mounted": true, "image_backed": false, "can_manage_source": false, "version": "01.020.000", "kraken": true, "kraken_patch_applied": true, "playgo_stub_enabled": true,
+     "last_launch": {"id": 37, "outcome": "exited_normally", "at": "2026-11-19 21:30:00", "short_error": null, "category": null}},
+    {"title_id": "PPSA90011", "title_name": "Hollow Crown: The Very Long Subtitle Edition of the Northern Reaches", "source_type": "image", "image_type": "exfatfs", "path": "/data/homebrew/[Hollow Crown]-[PPSA90011].exfat", "size_bytes": 68719476736, "installed": true, "mounted": true, "version": "02.000.000"},
+    {"title_id": "PPSA90012", "title_name": "Static Bloom", "source_type": "image", "image_type": "ufs", "path": "/data/homebrew/Static Bloom.ffpkg", "size_bytes": 1073741824, "installed": true, "mounted": false, "version": "01.000.000",
+     "last_launch": {"id": 36, "outcome": "spawn_failed", "at": "2026-11-21 17:11:30", "short_error": "CE-107750-0", "category": "permission"}},
+    {"title_id": "PPSA90013", "title_name": "Kite Weather", "source_type": "folder", "path": "/data/homebrew/PPSA90013-app", "installed": true, "mounted": true, "version": "01.003.000", "has_patch": true, "dlc_count": 2, "backport_path": "/data/homebrew/backports/PPSA90013 Kite Weather"},
+    {"title_id": "PPSA90014", "title_name": "Deep Field", "source_type": "image", "image_type": "exfatfs", "path": "/mnt/usb0/games/Deep Field.exfat", "size_bytes": 7516192768, "installed": true, "mounted": true, "version": "01.000.000",
+     "last_launch": {"id": 42, "outcome": "launch_in_progress", "at": "2026-11-21 20:15:40", "short_error": null, "category": null}}
+  ]
+}
