@@ -634,6 +634,13 @@ static bool wait_while_managed_game_runs(void) {
       return false;
     if (check_running_game(predecessor > 0, title_id) == SM_STARTUP_PROCEED) {
       if (waiting) {
+        // Give the predecessor one more poll to finish the game's exit
+        // handling, so the stop request that follows is not deferred for a
+        // game that has already closed.
+        if (!startup_poll_sleep())
+          return false;
+        if (check_running_game(predecessor > 0, title_id) != SM_STARTUP_PROCEED)
+          continue;
         uint64_t now_us = monotonic_time_us();
         g_startup_waited_us += now_us > started_us ? now_us - started_us : 0;
       }
