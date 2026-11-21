@@ -30,6 +30,12 @@ void sm_diag_note_process_finalized(pid_t pid, uint64_t exit_time_us);
 void sm_diag_note_game_error(pid_t pid, const char *title_id, int kind,
                              const char *text);
 
+// Shutdown: drop new events, let the diagnostics thread process what is
+// queued, write launches.json once more and join it. Call after the event
+// producers (ShellCore hooks/service, lifecycle watcher) stopped and before
+// mdbg, app.db and the log shut down. Idempotent.
+void sm_diag_stop(void);
+
 // API helpers. They return a new JSON object owned by the caller.
 // True when url is one of the GET routes served by sm_diag_api_response().
 bool sm_diag_api_route(const char *url);
@@ -43,5 +49,9 @@ bool sm_diag_add_last_launch(struct json_object *item, const char *title_id);
 
 // System report (src/sm_diag_system.c).
 struct json_object *sm_diag_system_report(void);
+// A mount of this filesystem type ("unionfs", "pfs") succeeded; the system
+// report uses it as evidence when the kernel's filesystem list is missing.
+// Lock-free; safe on launch and mount paths.
+void sm_diag_note_fs_mounted(const char *fstype);
 
 #endif

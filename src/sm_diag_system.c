@@ -4,6 +4,7 @@
 
 #include "sm_platform.h"
 
+#include <stdatomic.h>
 #include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
@@ -315,6 +316,18 @@ static void read_vfs_list(vfs_list_t *list) {
   list->known = true;
 }
 
+static atomic_bool g_unionfs_seen_ok = false;
+static atomic_bool g_pfs_seen_ok = false;
+
+void sm_diag_note_fs_mounted(const char *fstype) {
+  if (!fstype)
+    return;
+  if (strcmp(fstype, "unionfs") == 0)
+    atomic_store(&g_unionfs_seen_ok, true);
+  else if (strcmp(fstype, "pfs") == 0)
+    atomic_store(&g_pfs_seen_ok, true);
+}
+
 static int vfs_registered(const vfs_list_t *list, const char *name) {
   if (!list->known)
     return -1;
@@ -355,18 +368,6 @@ static int probe_control_device(const char *path, char reason[160]) {
   close(fd);
   snprintf(reason, 160, "%s opened read/write", path);
   return 1;
-}
-
-static void vfs_reason(const vfs_list_t *vfs, const char *name, int registered,
-                       size_t mounted, char reason[160]) {
-  if (registered < 0)
-    snprintf(reason, 160, "vfs.conflist unreadable (%s); %zu %s mount(s) present",
-             strerror(vfs->error), mounted, name);
-  else if (registered)
-    snprintf(reason, 160, "%s registered in the kernel; %zu mount(s) present",
-             name, mounted);
-  else
-    snprintf(reason, 160, "%s is not registered in the kernel", name);
 }
 
 struct json_object *sm_diag_system_report(void) {
@@ -442,27 +443,30 @@ struct json_object *sm_diag_system_report(void) {
   int md = probe_control_device(MD_CTRL_PATH, reason);
   json_object_array_add(mechanisms, mechanism("md", md, reason));
 
-  int nullfs = vfs_registered(&vfs, "nullfs");
-  size_t nullfs_mounts = count_mounts(mounts, mount_count, "nullfs");
-  if (nullfs < 0 && nullfs_mounts > 0)
-    nullfs = 1; // An existing nullfs mount proves the filesystem works.
-  vfs_reason(&vfs, "nullfs", vfs_registered(&vfs, "nullfs"), nullfs_mounts, reason);
+  // vfs.conflist does not exist on the PS5 (ENOENT): decide from mounts
+  // present now and mounts UniMount completed this session instead.
+  int nullfs = sm_diag_fs_availability(
+      "nullfs", vfs_registered(&vfs, "nullfs"),
+      count_mounts(mounts, mount_count, "nullfs"), false, reason, sizeof(reason));
   json_object_array_add(mechanisms, mechanism("nullfs", nullfs, reason));
 
-  int unionfs = vfs_registered(&vfs, "unionfs");
-  size_t unionfs_mounts = count_mounts(mounts, mount_count, "unionfs");
-  if (unionfs < 0 && unionfs_mounts > 0)
-    unionfs = 1;
-  vfs_reason(&vfs, "unionfs", vfs_registered(&vfs, "unionfs"), unionfs_mounts, reason);
+  int unionfs = sm_diag_fs_availability(
+      "unionfs", vfs_registered(&vfs, "unionfs"),
+      count_mounts(mounts, mount_count, "unionfs"),
+      atomic_load(&g_unionfs_seen_ok), reason, sizeof(reason));
   json_object_array_add(mechanisms, mechanism("unionfs", unionfs, reason));
 
   // Source: sm_image.c mounts PFS images with nmount("pfs") over an LVD unit.
-  int pfs_fs = vfs_registered(&vfs, "pfs");
-  int pfs = lvd == 0 || pfs_fs == 0 ? 0 : (pfs_fs < 0 ? -1 : 1);
-  if (lvd == 0)
+  int pfs;
+  if (lvd == 0) {
+    pfs = 0;
     snprintf(reason, sizeof(reason), "PFS images attach through LVD, which is unavailable");
-  else
-    vfs_reason(&vfs, "pfs", pfs_fs, count_mounts(mounts, mount_count, "pfs"), reason);
+  } else {
+    pfs = sm_diag_fs_availability(
+        "pfs", vfs_registered(&vfs, "pfs"),
+        count_mounts(mounts, mount_count, "pfs"), atomic_load(&g_pfs_seen_ok),
+        reason, sizeof(reason));
+  }
   json_object_array_add(mechanisms, mechanism("pfs_images", pfs, reason));
 
   // Kraken direct .pkg mount.

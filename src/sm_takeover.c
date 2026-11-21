@@ -23,11 +23,13 @@
 #include "sm_unimount_logic.h"
 
 #define TAKEOVER_IO_TIMEOUT_MS 2000
+#define TAKEOVER_PROBE_DEADLINE_US 4000000ull
 #define TAKEOVER_MAX_REPLY (512u * 1024u)
 #define TAKEOVER_EXIT_POLL_US 250000u
 #define TAKEOVER_EXIT_SLOW_US 5000000ull
 #define TAKEOVER_EXIT_MAX_US 15000000ull
 #define TAKEOVER_RETRY_US 3000000u
+#define TAKEOVER_UNKNOWN_MAX_RETRY_US 30000000u
 
 typedef enum {
   TAKEOVER_PENDING = 0,
@@ -35,12 +37,14 @@ typedef enum {
   TAKEOVER_TAKEN_OVER,
   TAKEOVER_WAITING_FOR_GAME,
   TAKEOVER_WAITING_FOR_QUIT,
+  TAKEOVER_WAITING_FOR_REPLY,
 } takeover_state_t;
 
 static struct {
   pthread_mutex_t mutex;
   takeover_state_t state;
   char kraken_version[32];
+  char detail[128];
   unsigned legacy_released;
   unsigned legacy_left;
   bool previous_unclean;
@@ -61,6 +65,8 @@ static const char *takeover_state_name(takeover_state_t state) {
     return "waiting_for_game";
   case TAKEOVER_WAITING_FOR_QUIT:
     return "waiting_for_quit";
+  case TAKEOVER_WAITING_FOR_REPLY:
+    return "waiting_for_reply";
   case TAKEOVER_PENDING:
   default:
     return "pending";
@@ -73,23 +79,46 @@ static void set_state(takeover_state_t state) {
   pthread_mutex_unlock(&g_takeover.mutex);
 }
 
+// Non-blocking connect bounded by TAKEOVER_IO_TIMEOUT_MS: a full listen
+// backlog must not stall startup. errno is ECONNREFUSED only when nothing
+// listens.
 static int connect_loopback(uint16_t port) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0)
     return -1;
-  struct timeval tv = {.tv_sec = TAKEOVER_IO_TIMEOUT_MS / 1000,
-                       .tv_usec = (TAKEOVER_IO_TIMEOUT_MS % 1000) * 1000};
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+  }
   struct sockaddr_in address;
   memset(&address, 0, sizeof(address));
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  int error = 0;
   if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-    int saved_errno = errno;
+    error = errno;
+    if (error == EINPROGRESS || error == EINTR) {
+      struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+      int ready;
+      do
+        ready = poll(&pfd, 1, TAKEOVER_IO_TIMEOUT_MS);
+      while (ready < 0 && errno == EINTR);
+      socklen_t error_len = sizeof(error);
+      if (ready == 0)
+        error = ETIMEDOUT;
+      else if (ready < 0)
+        error = errno;
+      else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) != 0)
+        error = errno;
+    }
+  }
+  if (error != 0) {
     close(fd);
-    errno = saved_errno;
+    errno = error;
     return -1;
   }
   return fd;
@@ -103,100 +132,147 @@ static bool port_has_listener(uint16_t port) {
   return true;
 }
 
-// Returns the HTTP status, 0 when nothing listens, -1 for a broken reply.
-// *body_out (caller frees) receives the body for a parsed reply.
-static int http_loopback(uint16_t port, const char *request, char **body_out,
-                         size_t *body_len_out) {
-  if (body_out)
-    *body_out = NULL;
-  if (body_len_out)
-    *body_len_out = 0;
+typedef enum {
+  LOOPBACK_REFUSED = 0,  // nothing listens
+  LOOPBACK_FAILED,       // something may listen; connect or send failed
+  LOOPBACK_REPLIED,      // *reply_out holds what arrived (possibly nothing)
+} loopback_result_t;
+
+// Sends request and keeps what the peer sends until it closes or resets, the
+// TAKEOVER_MAX_REPLY cap or TAKEOVER_PROBE_DEADLINE_US. *reply_out (caller
+// frees) is NUL-terminated.
+static loopback_result_t http_loopback(uint16_t port, const char *request,
+                                       char **reply_out, size_t *length_out,
+                                       int *error_out) {
+  *reply_out = NULL;
+  *length_out = 0;
+  *error_out = 0;
   int fd = connect_loopback(port);
-  if (fd < 0)
-    return errno == ECONNREFUSED ? 0 : -1;
+  if (fd < 0) {
+    *error_out = errno;
+    return errno == ECONNREFUSED ? LOOPBACK_REFUSED : LOOPBACK_FAILED;
+  }
+  uint64_t deadline = monotonic_time_us() + TAKEOVER_PROBE_DEADLINE_US;
   size_t request_len = strlen(request);
   for (size_t sent = 0; sent < request_len;) {
     ssize_t count = send(fd, request + sent, request_len - sent, 0);
     if (count < 0 && errno == EINTR)
       continue;
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) &&
+        monotonic_time_us() < deadline) {
+      struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+      (void)poll(&pfd, 1, 100);
+      continue;
+    }
     if (count <= 0) {
+      *error_out = count < 0 ? errno : EPIPE;
       close(fd);
-      return -1;
+      return LOOPBACK_FAILED;
     }
     sent += (size_t)count;
   }
   char *reply = malloc(TAKEOVER_MAX_REPLY + 1u);
   if (!reply) {
+    *error_out = ENOMEM;
     close(fd);
-    return -1;
+    return LOOPBACK_FAILED;
   }
   size_t length = 0;
-  while (length < TAKEOVER_MAX_REPLY) {
-    ssize_t count = recv(fd, reply + length, TAKEOVER_MAX_REPLY - length, 0);
-    if (count < 0 && errno == EINTR)
+  while (length < TAKEOVER_MAX_REPLY && !should_stop_requested()) {
+    uint64_t now = monotonic_time_us();
+    if (now >= deadline) {
+      *error_out = ETIMEDOUT;
+      break;
+    }
+    uint64_t left_ms = (deadline - now + 999u) / 1000u;
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    int ready = poll(&pfd, 1, left_ms > 250u ? 250 : (int)left_ms);
+    if (ready < 0 && errno != EINTR) {
+      *error_out = errno;
+      break;
+    }
+    if (ready <= 0)
       continue;
+    ssize_t count = recv(fd, reply + length, TAKEOVER_MAX_REPLY - length, 0);
+    if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+      continue;
+    if (count < 0)
+      *error_out = errno;
     if (count <= 0)
       break;
     length += (size_t)count;
   }
   close(fd);
   reply[length] = '\0';
-  int status = 0;
-  size_t body_offset = 0;
-  if (!sm_http_parse_response(reply, length, &status, &body_offset)) {
-    free(reply);
-    return -1;
-  }
-  if (body_out) {
-    memmove(reply, reply + body_offset, length - body_offset + 1u);
-    *body_out = reply;
-    if (body_len_out)
-      *body_len_out = length - body_offset;
-  } else {
-    free(reply);
-  }
-  return status;
+  *reply_out = reply;
+  *length_out = length;
+  return LOOPBACK_REPLIED;
 }
 
-static sm_peer_kind_t probe_kraken(char version[32]) {
-  char *body = NULL;
-  size_t body_len = 0;
-  int status = http_loopback((uint16_t)SM_KRAKEN_PORT,
-                             "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                             "Connection: close\r\n\r\n",
-                             &body, &body_len);
-  sm_peer_kind_t kind = sm_takeover_classify_state(status, body, body_len);
+static sm_peer_kind_t probe_kraken(char version[32], char *why,
+                                   size_t why_size) {
+  char *reply = NULL;
+  size_t length = 0;
+  int error = 0;
+  loopback_result_t result =
+      http_loopback((uint16_t)SM_KRAKEN_PORT,
+                    "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    "Connection: close\r\n\r\n",
+                    &reply, &length, &error);
   version[0] = '\0';
-  if (kind == SM_PEER_KRAKEN) {
-    struct json_object *root = json_tokener_parse(body);
-    struct json_object *value;
-    if (root && json_object_object_get_ex(root, "version", &value))
-      (void)strlcpy(version, json_object_get_string(value), 32);
-    if (root)
-      json_object_put(root);
+  sm_peer_kind_t kind;
+  if (result == LOOPBACK_REFUSED) {
+    kind = SM_PEER_NONE;
+    (void)snprintf(why, why_size, "nothing listens");
+  } else if (result == LOOPBACK_FAILED) {
+    kind = SM_PEER_UNKNOWN;
+    (void)snprintf(why, why_size, "request failed: %s", strerror(error));
+  } else {
+    const char *reason = NULL;
+    kind = sm_takeover_classify_reply(reply, length, version, &reason);
+    (void)snprintf(why, why_size, "%s; %zu bytes%s%s", reason ? reason : "?",
+                   length, error ? ", " : "", error ? strerror(error) : "");
   }
-  free(body);
+  free(reply);
   return kind;
 }
 
 static sm_quit_outcome_t request_kraken_quit(int *status_out) {
   // A newer Kraken copy takes over exactly this way (web.rs take_port).
-  int status = http_loopback((uint16_t)SM_KRAKEN_PORT,
-                             "POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                             "Content-Length: 0\r\nConnection: close\r\n\r\n",
-                             NULL, NULL);
+  char *reply = NULL;
+  size_t length = 0;
+  int error = 0;
+  loopback_result_t result =
+      http_loopback((uint16_t)SM_KRAKEN_PORT,
+                    "POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    "Content-Length: 0\r\nConnection: close\r\n\r\n",
+                    &reply, &length, &error);
+  int status = -1;
+  size_t body_offset = 0;
+  if (result == LOOPBACK_REFUSED)
+    status = 0;
+  else if (result == LOOPBACK_REPLIED &&
+           !sm_http_parse_response(reply, length, &status, &body_offset))
+    status = -1;
+  free(reply);
   *status_out = status;
   return sm_takeover_quit_outcome(status);
 }
 
-static bool wait_for_port_release(void) {
+typedef enum {
+  PORT_RELEASED = 0,
+  PORT_STILL_LISTENING,
+  PORT_WAIT_STOPPED,
+} port_release_t;
+
+static port_release_t wait_for_port_release(void) {
   uint64_t started = monotonic_time_us();
   bool slow_logged = false;
   for (;;) {
     if (!port_has_listener((uint16_t)SM_KRAKEN_PORT)) {
       log_debug("[TAKEOVER] Kraken Mount stopped; port %u released",
                 SM_KRAKEN_PORT);
-      return true;
+      return PORT_RELEASED;
     }
     uint64_t waited = monotonic_time_us() - started;
     if (!slow_logged && waited >= TAKEOVER_EXIT_SLOW_US) {
@@ -205,14 +281,14 @@ static bool wait_for_port_release(void) {
       slow_logged = true;
     }
     if (waited >= TAKEOVER_EXIT_MAX_US) {
-      log_debug("[TAKEOVER] Kraken Mount did not release port %u within %llu s;"
-                " continuing (the compatible listener retries the bind)",
+      log_debug("[TAKEOVER] port %u still has a listener after %llu s;"
+                " probing again before any mount work",
                 SM_KRAKEN_PORT,
                 (unsigned long long)(TAKEOVER_EXIT_MAX_US / 1000000ull));
-      return true;
+      return PORT_STILL_LISTENING;
     }
     if (sleep_with_stop_check(TAKEOVER_EXIT_POLL_US))
-      return false;
+      return PORT_WAIT_STOPPED;
   }
 }
 
@@ -268,31 +344,70 @@ static void release_legacy_mounts(bool startup) {
               left);
 }
 
+static void set_detail(const char *detail) {
+  pthread_mutex_lock(&g_takeover.mutex);
+  (void)strlcpy(g_takeover.detail, detail ? detail : "",
+                sizeof(g_takeover.detail));
+  pthread_mutex_unlock(&g_takeover.mutex);
+}
+
 bool sm_takeover_run(void) {
   bool notified = false;
+  bool contacted = false;  // Kraken Mount answered at least once
+  unsigned unknown_retry_us = TAKEOVER_RETRY_US;
+  char last_why[128] = "";
   for (;;) {
     if (should_stop_requested())
       return false;
     char version[32];
-    sm_peer_kind_t peer = probe_kraken(version);
+    char why[128];
+    sm_peer_kind_t peer = probe_kraken(version, why, sizeof(why));
+    if (peer == SM_PEER_UNKNOWN) {
+      // Something listens but did not say what it is: Kraken Mount may be
+      // slow (cache build, large library). Never treat that as absent.
+      pthread_mutex_lock(&g_takeover.mutex);
+      bool changed = g_takeover.state != TAKEOVER_WAITING_FOR_REPLY;
+      g_takeover.state = TAKEOVER_WAITING_FOR_REPLY;
+      (void)strlcpy(g_takeover.detail, why, sizeof(g_takeover.detail));
+      pthread_mutex_unlock(&g_takeover.mutex);
+      if (changed || strcmp(last_why, why) != 0)
+        log_debug("[TAKEOVER] port %u has a listener but its reply is not "
+                  "conclusive (%s); no scan or mount work until it is known, "
+                  "asking again in %u s",
+                  SM_KRAKEN_PORT, why, unknown_retry_us / 1000000u);
+      (void)strlcpy(last_why, why, sizeof(last_why));
+      if (!notified) {
+        notify_system_l10n(SM_L10N_KRAKEN_TAKEOVER_WAITING);
+        notified = true;
+      }
+      if (sleep_with_stop_check(unknown_retry_us))
+        return false;
+      unknown_retry_us = unknown_retry_us >= TAKEOVER_UNKNOWN_MAX_RETRY_US / 2u
+                             ? TAKEOVER_UNKNOWN_MAX_RETRY_US
+                             : unknown_retry_us * 2u;
+      continue;
+    }
+    unknown_retry_us = TAKEOVER_RETRY_US;
+    last_why[0] = '\0';
     if (peer != SM_PEER_KRAKEN) {
       pthread_mutex_lock(&g_takeover.mutex);
-      bool waited = g_takeover.state == TAKEOVER_WAITING_FOR_GAME ||
-                    g_takeover.state == TAKEOVER_WAITING_FOR_QUIT;
-      g_takeover.state = waited ? TAKEOVER_TAKEN_OVER : TAKEOVER_ABSENT;
+      g_takeover.state = contacted ? TAKEOVER_TAKEN_OVER : TAKEOVER_ABSENT;
+      (void)strlcpy(g_takeover.detail, peer == SM_PEER_OTHER ? why : "",
+                    sizeof(g_takeover.detail));
       pthread_mutex_unlock(&g_takeover.mutex);
       if (peer == SM_PEER_OTHER)
-        log_debug("[TAKEOVER] port %u answers but is not Kraken Mount; "
-                  "nothing to take over", SM_KRAKEN_PORT);
+        log_debug("[TAKEOVER] port %u answers but is not Kraken Mount (%s); "
+                  "nothing to take over", SM_KRAKEN_PORT, why);
       else if (peer == SM_PEER_UNIMOUNT)
         log_debug("[TAKEOVER] port %u is a UniMount listener", SM_KRAKEN_PORT);
-      else if (waited)
+      else if (contacted)
         log_debug("[TAKEOVER] Kraken Mount is gone");
       else
         log_debug("[TAKEOVER] Kraken Mount not running");
       break;
     }
 
+    contacted = true;
     pthread_mutex_lock(&g_takeover.mutex);
     (void)strlcpy(g_takeover.kraken_version, version,
                   sizeof(g_takeover.kraken_version));
@@ -302,10 +417,18 @@ bool sm_takeover_run(void) {
     if (outcome == SM_QUIT_ACCEPTED) {
       log_debug("[TAKEOVER] Kraken Mount %s accepted quit (HTTP %d)", version,
                 status);
-      if (!wait_for_port_release())
+      port_release_t released = wait_for_port_release();
+      if (released == PORT_WAIT_STOPPED)
         return false;
-      set_state(TAKEOVER_TAKEN_OVER);
-      break;
+      if (released == PORT_RELEASED) {
+        set_state(TAKEOVER_TAKEN_OVER);
+        set_detail(NULL);
+        break;
+      }
+      // Still listening: find out again what it is before mounting anything.
+      set_state(TAKEOVER_WAITING_FOR_QUIT);
+      set_detail("accepted quit but still listening");
+      continue;
     }
     takeover_state_t waiting = outcome == SM_QUIT_GAME_RUNNING
                                    ? TAKEOVER_WAITING_FOR_GAME
@@ -313,6 +436,7 @@ bool sm_takeover_run(void) {
     pthread_mutex_lock(&g_takeover.mutex);
     bool changed = g_takeover.state != waiting;
     g_takeover.state = waiting;
+    g_takeover.detail[0] = '\0';
     pthread_mutex_unlock(&g_takeover.mutex);
     if (changed)
       log_debug("[TAKEOVER] Kraken Mount %s refused quit (HTTP %d): %s; "
@@ -488,6 +612,8 @@ bool sm_ownership_add_json(struct json_object *response) {
   takeover_state_t state = g_takeover.state;
   char kraken_version[32];
   (void)strlcpy(kraken_version, g_takeover.kraken_version, sizeof(kraken_version));
+  char detail[sizeof(g_takeover.detail)];
+  (void)strlcpy(detail, g_takeover.detail, sizeof(detail));
   unsigned released = g_takeover.legacy_released;
   unsigned left = g_takeover.legacy_left;
   bool previous_unclean = g_takeover.previous_unclean;
@@ -517,6 +643,9 @@ bool sm_ownership_add_json(struct json_object *response) {
          (kraken_version[0]
               ? add_value(kraken, "version", json_object_new_string(kraken_version))
               : json_object_object_add(kraken, "version", NULL) == 0) &&
+         (detail[0]
+              ? add_value(kraken, "detail", json_object_new_string(detail))
+              : json_object_object_add(kraken, "detail", NULL) == 0) &&
          add_value(response, "legacy_mounts", legacy = json_object_new_object()) &&
          add_value(legacy, "released", json_object_new_int64(released)) &&
          add_value(legacy, "left", json_object_new_int64(left)) &&

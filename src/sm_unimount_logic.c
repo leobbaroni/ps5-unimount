@@ -45,33 +45,197 @@ static const unsigned char *find_bytes(const unsigned char *data, size_t length,
 
 // --- Takeover ---
 
-sm_peer_kind_t sm_takeover_classify_state(int http_status, const char *body,
-                                          size_t body_len) {
-  if (http_status <= 0)
-    return SM_PEER_NONE;
-  if (http_status != 200 || !body || body_len == 0)
-    return SM_PEER_OTHER;
-  struct json_tokener *tokener = json_tokener_new();
-  if (!tokener)
-    return SM_PEER_OTHER;
-  struct json_object *root =
-      json_tokener_parse_ex(tokener, body, (int)(body_len > INT32_MAX
-                                                     ? INT32_MAX
-                                                     : body_len));
-  json_tokener_free(tokener);
-  sm_peer_kind_t kind = SM_PEER_OTHER;
-  struct json_object *value;
-  if (root && json_object_is_type(root, json_type_object)) {
-    if (json_object_object_get_ex(root, "unimount", &value))
-      kind = SM_PEER_UNIMOUNT;
-    else if (json_object_object_get_ex(root, "version", &value) &&
-             json_object_is_type(value, json_type_string) &&
-             json_object_object_get_ex(root, "games", &value) &&
-             json_object_is_type(value, json_type_array))
-      kind = SM_PEER_KRAKEN;
+typedef struct {
+  bool closed;          // the top-level object ended with '}'
+  bool syntax_error;    // not a JSON object, or malformed at the top level
+  bool unimount;        // top-level key "unimount" (any value)
+  bool version_string;  // top-level "version" with a string value
+  bool games_array;     // top-level "games" with an array value
+  char version[32];
+} json_top_scan_t;
+
+static bool json_is_space(char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// Skips a string starting at text[*at] == '"'. False when it is cut off.
+static bool json_skip_string(const char *text, size_t length, size_t *at) {
+  bool escaped = false;
+  for (size_t i = *at + 1u; i < length; ++i) {
+    if (escaped)
+      escaped = false;
+    else if (text[i] == '\\')
+      escaped = true;
+    else if (text[i] == '"') {
+      *at = i + 1u;
+      return true;
+    }
   }
-  if (root)
-    json_object_put(root);
+  return false;
+}
+
+// Records the top-level keys of a JSON object, or of any prefix of one: the
+// probe may only have read the start of a large body.
+static void json_scan_top_level(const char *text, size_t length,
+                                json_top_scan_t *out) {
+  memset(out, 0, sizeof(*out));
+  size_t i = 0;
+#define SKIP_SPACE()                                    \
+  do {                                                  \
+    while (i < length && json_is_space(text[i]))        \
+      ++i;                                              \
+    if (i == length)                                    \
+      return;                                           \
+  } while (0)
+  SKIP_SPACE();
+  if (text[i] != '{') {
+    out->syntax_error = true;
+    return;
+  }
+  ++i;
+  for (bool first = true;; first = false) {
+    SKIP_SPACE();
+    if (first && text[i] == '}') {
+      out->closed = true;
+      return;
+    }
+    if (text[i] != '"') {
+      out->syntax_error = true;
+      return;
+    }
+    size_t key = i + 1u;
+    if (!json_skip_string(text, length, &i))
+      return;
+    size_t key_len = i - 1u - key;
+    SKIP_SPACE();
+    if (text[i] != ':') {
+      out->syntax_error = true;
+      return;
+    }
+    ++i;
+    SKIP_SPACE();
+    char first_char = text[i];
+#define KEY_IS(name) \
+  (key_len == sizeof(name) - 1u && memcmp(text + key, name, key_len) == 0)
+    if (KEY_IS("unimount"))
+      out->unimount = true;
+    else if (KEY_IS("games") && first_char == '[')
+      out->games_array = true;
+    bool version = KEY_IS("version") && first_char == '"';
+#undef KEY_IS
+    if (first_char == '"') {
+      size_t start = i + 1u;
+      if (!json_skip_string(text, length, &i))
+        return;
+      if (version) {
+        out->version_string = true;
+        size_t value_len = i - 1u - start;
+        if (value_len < sizeof(out->version)) {
+          memcpy(out->version, text + start, value_len);
+          out->version[value_len] = '\0';
+        }
+      }
+    } else if (first_char == '{' || first_char == '[') {
+      unsigned depth = 0;
+      for (;;) {
+        if (i == length)
+          return;
+        char c = text[i];
+        if (c == '"') {
+          if (!json_skip_string(text, length, &i))
+            return;
+          continue;
+        }
+        ++i;
+        if (c == '{' || c == '[')
+          ++depth;
+        else if ((c == '}' || c == ']') && --depth == 0)
+          break;
+      }
+    } else {
+      size_t start = i;
+      while (i < length && text[i] != ',' && text[i] != '}' &&
+             !json_is_space(text[i])) {
+        if (!isalnum((unsigned char)text[i]) && text[i] != '-' &&
+            text[i] != '+' && text[i] != '.') {
+          out->syntax_error = true;
+          return;
+        }
+        ++i;
+      }
+      if (i == start) {
+        out->syntax_error = true;
+        return;
+      }
+    }
+    SKIP_SPACE();
+    if (text[i] == '}') {
+      out->closed = true;
+      return;
+    }
+    if (text[i] != ',') {
+      out->syntax_error = true;
+      return;
+    }
+    ++i;
+  }
+#undef SKIP_SPACE
+}
+
+sm_peer_kind_t sm_takeover_classify_reply(const char *reply, size_t length,
+                                          char version[32], const char **why) {
+  static const char http_prefix[] = "HTTP/1.";
+  const char *reason = NULL;
+  sm_peer_kind_t kind = SM_PEER_UNKNOWN;
+  if (version)
+    version[0] = '\0';
+  size_t prefix_len = length < sizeof(http_prefix) - 1u
+                          ? length : sizeof(http_prefix) - 1u;
+  int status = 0;
+  size_t body_offset = 0;
+  if (!reply || length == 0) {
+    reason = "listener sent no reply";
+  } else if (memcmp(reply, http_prefix, prefix_len) != 0) {
+    // Kraken Mount always answers HTTP/1.1; anything else is another service.
+    kind = SM_PEER_OTHER;
+    reason = "listener is not an HTTP server";
+  } else if (!find_bytes((const unsigned char *)reply, length, "\r\n\r\n", 4u)) {
+    reason = "incomplete HTTP response head";
+  } else if (!sm_http_parse_response(reply, length, &status, &body_offset)) {
+    kind = SM_PEER_OTHER;
+    reason = "malformed HTTP status line";
+  } else if (status >= 500) {
+    // An overloaded or starting server may be Kraken Mount: ask again.
+    reason = "HTTP server error";
+  } else if (status != 200) {
+    kind = SM_PEER_OTHER;
+    reason = "HTTP status other than 200";
+  } else {
+    json_top_scan_t scan;
+    json_scan_top_level(reply + body_offset, length - body_offset, &scan);
+    if (scan.unimount) {
+      kind = SM_PEER_UNIMOUNT;
+      reason = "UniMount compatible listener";
+    } else if (scan.version_string && scan.games_array) {
+      kind = SM_PEER_KRAKEN;
+      reason = scan.closed ? "Kraken Mount state"
+                           : "Kraken Mount state (body prefix)";
+      if (version)
+        (void)copy_text(version, 32, scan.version);
+    } else if (scan.syntax_error) {
+      kind = SM_PEER_OTHER;
+      reason = "body is not a JSON object";
+    } else if (scan.closed) {
+      kind = SM_PEER_OTHER;
+      reason = "JSON without Kraken Mount's version and games";
+    } else {
+      reason = length - body_offset == 0
+                   ? "empty or missing body"
+                   : "truncated body without Kraken Mount's keys";
+    }
+  }
+  if (why)
+    *why = reason;
   return kind;
 }
 
@@ -387,6 +551,8 @@ void sm_auto_failure_forget(sm_auto_failure_t *list, size_t count,
 
 bool sm_auto_error_is_transient(int status, const char *reason) {
   if (status == 0)
+    return false;
+  if (reason && strcmp(reason, SM_AUTO_REASON_USER_CANCELLED) == 0)
     return false;
   if (status == EBUSY || status == ECANCELED || status == EAGAIN ||
       status == EINTR)

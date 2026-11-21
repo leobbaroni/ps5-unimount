@@ -22,20 +22,90 @@ static void test_classify_state(void) {
       "\"playgo\":null,\"playgo_off\":false}],\"drives\":[],\"cache\":{},\"log\":[]}";
   static const char ours[] =
       "{\"version\":\"0.3.0\",\"games\":[],\"unimount\":\"0.1.0\"}";
-  assert(sm_takeover_classify_state(200, kraken, strlen(kraken)) == SM_PEER_KRAKEN);
-  assert(sm_takeover_classify_state(200, ours, strlen(ours)) == SM_PEER_UNIMOUNT);
-  assert(sm_takeover_classify_state(0, NULL, 0) == SM_PEER_NONE);
-  assert(sm_takeover_classify_state(-1, NULL, 0) == SM_PEER_NONE);
-  assert(sm_takeover_classify_state(404, "not found", 9) == SM_PEER_OTHER);
-  assert(sm_takeover_classify_state(200, "<html>", 6) == SM_PEER_OTHER);
-  assert(sm_takeover_classify_state(200, "[]", 2) == SM_PEER_OTHER);
+  static const char ok_head[] =
+      "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n"
+      "Cache-Control: no-store\r\n\r\n";
+  char reply[4096];
+  char version[32];
+  const char *why = NULL;
+#define CLASSIFY(head, body, body_len)                                       \
+  (snprintf(reply, sizeof(reply), "%s%.*s", head, (int)(body_len), body),    \
+   sm_takeover_classify_reply(reply, strlen(reply), version, &why))
+
+  // Complete replies.
+  assert(CLASSIFY(ok_head, kraken, strlen(kraken)) == SM_PEER_KRAKEN);
+  assert(strcmp(version, "0.3.1") == 0 && why);
+  assert(CLASSIFY(ok_head, ours, strlen(ours)) == SM_PEER_UNIMOUNT);
+  assert(version[0] == '\0');
+  // Valid HTTP from another server: not Kraken.
+  assert(CLASSIFY("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\n",
+                  "not found", 9) == SM_PEER_OTHER);
+  assert(CLASSIFY("HTTP/1.0 302 Found\r\nLocation: /\r\n\r\n", "", 0) ==
+         SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, "<html>", 6) == SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, "[]", 2) == SM_PEER_OTHER);
   static const char no_games[] = "{\"version\":\"1\",\"games\":{}}";
-  assert(sm_takeover_classify_state(200, no_games, strlen(no_games)) == SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, no_games, strlen(no_games)) == SM_PEER_OTHER);
   static const char numeric_version[] = "{\"version\":3,\"games\":[]}";
-  assert(sm_takeover_classify_state(200, numeric_version,
-                                    strlen(numeric_version)) == SM_PEER_OTHER);
-  // A truncated body is not trusted as Kraken.
-  assert(sm_takeover_classify_state(200, kraken, 40) == SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, numeric_version, strlen(numeric_version)) ==
+         SM_PEER_OTHER);
+  static const char other_json[] = " {\"status\":\"ok\",\"items\":[1,2,{\"a\":\"}\"}]}";
+  assert(CLASSIFY(ok_head, other_json, strlen(other_json)) == SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, "{}", 2) == SM_PEER_OTHER);
+  assert(CLASSIFY(ok_head, "{\"a\" 1}", 7) == SM_PEER_OTHER);
+  // Not HTTP at all (another protocol on the port).
+  assert(sm_takeover_classify_reply("SSH-2.0-OpenSSH\r\n", 17, version, &why) ==
+         SM_PEER_OTHER);
+  assert(sm_takeover_classify_reply("HTTX", 4, version, &why) == SM_PEER_OTHER);
+  assert(CLASSIFY("HTTP/1.1 2x4 X\r\n\r\n", "", 0) == SM_PEER_OTHER);
+
+  // Inconclusive: no bytes, a cut-off head, a server error, an empty body,
+  // or a body cut off before Kraken's keys. Never "absent".
+  assert(sm_takeover_classify_reply(NULL, 0, version, &why) == SM_PEER_UNKNOWN);
+  assert(sm_takeover_classify_reply("", 0, version, &why) == SM_PEER_UNKNOWN);
+  assert(sm_takeover_classify_reply("HTTP/1", 6, version, &why) == SM_PEER_UNKNOWN);
+  assert(sm_takeover_classify_reply(ok_head, 20, version, &why) == SM_PEER_UNKNOWN);
+  assert(CLASSIFY("HTTP/1.1 503 Service Unavailable\r\n\r\n", "", 0) ==
+         SM_PEER_UNKNOWN);
+  assert(CLASSIFY(ok_head, "", 0) == SM_PEER_UNKNOWN);
+  assert(CLASSIFY(ok_head, "  ", 2) == SM_PEER_UNKNOWN);
+  assert(CLASSIFY(ok_head, kraken, 10) == SM_PEER_UNKNOWN);
+  // "version" seen, "games" not yet.
+  assert(CLASSIFY(ok_head, kraken, 40) == SM_PEER_UNKNOWN);
+  assert(why && strstr(why, "truncated"));
+  // A truncated version string is not trusted either.
+  assert(CLASSIFY(ok_head, "{\"games\":[],\"version\":\"0.3", 27) ==
+         SM_PEER_UNKNOWN);
+
+  // A body prefix that already holds both keys is Kraken Mount (a large
+  // library or log can exceed the probe's read cap or deadline).
+  const char *games = strstr(kraken, "\"games\":[");
+  size_t cut = (size_t)(games - kraken) + strlen("\"games\":[{\"title");
+  assert(CLASSIFY(ok_head, kraken, cut) == SM_PEER_KRAKEN);
+  assert(strcmp(version, "0.3.1") == 0 && strstr(why, "prefix"));
+  // Escaped quotes and nested braces in skipped values do not confuse it.
+  static const char nested[] =
+      "{\"note\":\"a \\\"}\\\" b\",\"busy\":{\"x\":[\"]\"]},\"waiting\":null,"
+      "\"version\":\"0.4.0\",\"games\":[{\"title_name\":\"{[\"";
+  assert(CLASSIFY(ok_head, nested, strlen(nested)) == SM_PEER_KRAKEN);
+  assert(strcmp(version, "0.4.0") == 0);
+  // "games" seen first, "version" later.
+  static const char reordered[] = "{\"games\":[],\"version\":\"1.0\",\"lo";
+  assert(CLASSIFY(ok_head, reordered, strlen(reordered)) == SM_PEER_KRAKEN);
+  // A "games"/"version" inside a nested value is not top level.
+  static const char nested_keys[] =
+      "{\"data\":{\"version\":\"1\",\"games\":[]},\"x\":";
+  assert(CLASSIFY(ok_head, nested_keys, strlen(nested_keys)) == SM_PEER_UNKNOWN);
+  static const char nested_keys_closed[] =
+      "{\"data\":{\"version\":\"1\",\"games\":[]}}";
+  assert(CLASSIFY(ok_head, nested_keys_closed, strlen(nested_keys_closed)) ==
+         SM_PEER_OTHER);
+  // An oversized version string is still Kraken; it is just not copied.
+  static const char long_version[] =
+      "{\"version\":\"0123456789012345678901234567890123456789\",\"games\":[]}";
+  assert(CLASSIFY(ok_head, long_version, strlen(long_version)) == SM_PEER_KRAKEN);
+  assert(version[0] == '\0');
+#undef CLASSIFY
 }
 
 static void test_quit_and_http(void) {
@@ -230,6 +300,19 @@ static void test_failures(void) {
 
   assert(sm_auto_error_is_transient(EBUSY, "scanner_busy"));
   assert(sm_auto_error_is_transient(ECANCELED, NULL));
+  // Rest mode, shutdown or a game starting cancel a job: retried later.
+  assert(sm_auto_error_is_transient(ECANCELED, "game_active"));
+  // A cancel the user asked for is remembered like a failure for this
+  // (path, size, mtime), so the job does not restart 10 s later.
+  assert(!sm_auto_error_is_transient(ECANCELED, SM_AUTO_REASON_USER_CANCELLED));
+  {
+    sm_auto_failure_t cancelled[2];
+    memset(cancelled, 0, sizeof(cancelled));
+    sm_auto_failure_record(cancelled, 2, "/mnt/usb0/a.pkg", 10, 20,
+                           SM_AUTO_REASON_USER_CANCELLED);
+    assert(sm_auto_failure_blocks(cancelled, 2, "/mnt/usb0/a.pkg", 10, 20));
+    assert(!sm_auto_failure_blocks(cancelled, 2, "/mnt/usb0/a.pkg", 10, 21));
+  }
   assert(sm_auto_error_is_transient(EAGAIN, "kraken_sources_changed"));
   assert(sm_auto_error_is_transient(EEXIST, "storage_busy"));
   assert(!sm_auto_error_is_transient(EINVAL, "kraken_base_invalid"));

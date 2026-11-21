@@ -1,4 +1,7 @@
 #include "sm_platform.h"
+
+#include <pthread.h>
+
 #include "sm_runtime.h"
 #include "sm_scan.h"
 #include "sm_scan_tree.h"
@@ -529,11 +532,34 @@ typedef struct {
   char first_failed_path[MAX_PATH];
 } exec_permission_repair_t;
 
+#define EXEC_FAILURE_MEMORY 64u
+static pthread_mutex_t g_exec_failure_mutex = PTHREAD_MUTEX_INITIALIZER;
+static sm_exec_failure_t g_exec_failures[EXEC_FAILURE_MEMORY];
+static size_t g_exec_failure_next;
+
 static void repair_exec_permission(const char *path,
                                    exec_permission_repair_t *repair) {
+  struct stat before;
+  bool have_before = lstat(path, &before) == 0;
+  if (have_before) {
+    pthread_mutex_lock(&g_exec_failure_mutex);
+    bool known = sm_exec_failure_known(g_exec_failures, EXEC_FAILURE_MEMORY,
+                                       &before);
+    pthread_mutex_unlock(&g_exec_failure_mutex);
+    if (known)
+      return;  // failed before and unchanged since: not retried or logged
+  }
   int result = sm_add_exec_permission(path);
   if (result > 0)
     ++repair->fixed;
+  if (result < 0 && have_before) {
+    int saved_errno = errno;
+    pthread_mutex_lock(&g_exec_failure_mutex);
+    sm_exec_failure_remember(g_exec_failures, EXEC_FAILURE_MEMORY,
+                             &g_exec_failure_next, &before);
+    pthread_mutex_unlock(&g_exec_failure_mutex);
+    errno = saved_errno;
+  }
   if (result >= 0 || repair->failures++ != 0)
     return;
   repair->first_error = errno;
@@ -590,7 +616,17 @@ static bool is_local_ufs_or_bfs(const char *path, bool *read_only) {
          strcmp(filesystem.f_fstypename, "bfs") == 0;
 }
 
+// Module filename-case repair renames files, so it keeps its original gate:
+// the source itself is a writable UFS/BFS mount (not /data's nullfs view).
+static bool module_case_repair_allowed(const char *path) {
+  struct statfs fs;
+  return statfs(path, &fs) == 0 && !(fs.f_flags & MNT_RDONLY) &&
+         (!strcmp(fs.f_fstypename, "ufs") || !strcmp(fs.f_fstypename, "bfs"));
+}
+
 // Repairs executable permissions and module filename case for one source.
+// Execute bits are repaired on writable UFS/BFS, also through nullfs such as
+// /data; filename case only where module_case_repair_allowed().
 // Normal scanner passes also catch in-place writes without new vnode watches.
 // Parse metadata only when this directory's library snapshot changes.
 static void repair_game_executables_for_source(const char *path) {
@@ -602,15 +638,18 @@ static void repair_game_executables_for_source(const char *path) {
     return;
   struct stat st;
   bool read_only = true;
-  if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
-      !is_local_ufs_or_bfs(path, &read_only) || read_only)
+  if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+    return;
+  bool exec_allowed = is_local_ufs_or_bfs(path, &read_only) && !read_only;
+  bool case_allowed = module_case_repair_allowed(path);
+  if (!exec_allowed && !case_allowed)
     return;
   // eboot.bin is outside the module fingerprint and must not depend on a
   // complete module walk, so check it first on every pass.
   exec_permission_repair_t exec_repair = {0};
   char eboot_path[MAX_PATH];
   int written = snprintf(eboot_path, sizeof(eboot_path), "%s/eboot.bin", path);
-  if (written > 0 && (size_t)written < sizeof(eboot_path))
+  if (exec_allowed && written > 0 && (size_t)written < sizeof(eboot_path))
     repair_exec_permission(eboot_path, &exec_repair);
   module_case_snapshot_t snapshot = {.device = st.st_dev};
   if (!collect_module_case_files(path, 0, &snapshot))
@@ -630,14 +669,14 @@ static void repair_game_executables_for_source(const char *path) {
   if (module_case_fingerprint_matches(path, fingerprint))
     goto cleanup;
   size_t exec_failures_before = exec_repair.failures;
-  if (!repair_module_exec_permissions(&snapshot, &exec_repair))
+  if (exec_allowed && !repair_module_exec_permissions(&snapshot, &exec_repair))
     goto cleanup;
   // A failed chmod leaves ctime unchanged; keep the source uncached to retry.
   bool module_exec_incomplete = exec_repair.failures != exec_failures_before;
   size_t fixed = 0, conflicts = 0, failures = 0;
   int first_error = 0;
   const char *failed_path = NULL;
-  for (size_t i = 0; i < snapshot.count; ++i) {
+  for (size_t i = 0; case_allowed && i < snapshot.count; ++i) {
     if (should_stop_requested() || runtime_sleep_mode_active() ||
         sm_game_lifecycle_has_active_game())
       goto cleanup;

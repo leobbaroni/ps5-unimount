@@ -21,14 +21,29 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
 3. kstuff is awaited (unchanged).
 4. **Kraken Mount takeover** (`src/sm_takeover.c`), before any scan, mount or
    registration work:
-   - `GET http://127.0.0.1:8097/api/state` (2 s timeouts). The peer is real
-     Kraken Mount when the body is a JSON object with a string `version`, an
-     array `games` and no `unimount` key.
+   - `GET http://127.0.0.1:8097/api/state` (2 s connect timeout, 4 s to read
+     the reply). The peer is real Kraken Mount when the body is a JSON object
+     with a string `version`, an array `games` and no `unimount` key; a body
+     prefix that already holds both keys is enough (a large library or log
+     may not arrive within the read cap or deadline).
+   - Only "connection refused" means Kraken Mount is absent. A listener whose
+     reply is not conclusive (no reply, reset, cut-off head, 5xx, empty body,
+     body cut off before those keys) is **unknown**: state
+     `waiting_for_reply`, the reason is logged and reported as `detail`, and
+     the probe is repeated after 3 s, doubling to at most 30 s. Nothing is
+     scanned or mounted, legacy mounts are not released and the compatible
+     listener does not start meanwhile; the STOP file and signals still stop
+     UniMount. A valid answer that is clearly not Kraken Mount (not HTTP, a
+     non-5xx status other than 200, a body that is not a JSON object, or a
+     complete JSON object without those keys) counts as "another service":
+     state `absent` with that reason in `detail`.
    - `POST /api/quit` with an empty body from loopback - exactly what a newer
      Kraken copy sends (`web.rs take_port`). Kraken answers 204 and exits
      200 ms later, or 409 while a game runs.
    - 2xx: wait until nothing listens on 8097 (polled every 250 ms, logged
-     after 5 s, gives up waiting after 15 s and continues).
+     after 5 s). If something still listens after 15 s, the state becomes
+     `waiting_for_quit` and the probe starts again; UniMount never proceeds
+     while the port answers.
    - 409: state `waiting_for_game`, one notification, ask again every 3 s.
      Any other answer (an old build without `/api/quit`): `waiting_for_quit`,
      same loop. Nothing is scanned or mounted meanwhile; the STOP file and
@@ -66,8 +81,12 @@ error). It closes during rest mode and reopens afterwards.
   later tries this, retries its bind for 5 s, logs "port 8097 busy" and stops.
 - `GET /` - 302 to `http://<request host>:<api_port>/`.
 - Everything else 404. Requests are capped at 16 KiB, one connection at a
-  time with 2 s socket timeouts and a 5 s request deadline; the scanner never
-  waits on it.
+  time on a non-blocking socket: the request must arrive within 2 s and the
+  reply is abandoned after 2 s, and the stop flag is checked every 100 ms,
+  so a slow client cannot hold the listener or delay shutdown. The scanner
+  never waits on it.
+- `paused` is true while a game runs or a background title blocks automatic
+  work (the same rule that holds automatic builds back).
 
 ## Automatic mounting of debug PKGs (`[kraken] auto_mount`)
 
@@ -83,10 +102,19 @@ SMB, not manual list entries). A worker thread, never the scan thread:
   image or another `.pkg`, or a registration it may not adopt);
 - starts the same storage job as `POST /api/v1/packages/mount`
   (`run_kraken_job`: same guards, same progress in `/api/v1/games/storage/status`),
-  one job at a time and never while a game runs;
+  one job at a time and never while a game runs: "a game is active" (a game
+  process or a blocking background title) is checked again right before the
+  job starts, and an automatic job is cancelled as soon as a game becomes
+  active (retried later). Jobs requested through the API are not affected;
 - remembers a failure keyed by (path, size, mtime). It is retried when the file
   changes, after an explicit `/api/v1/packages/mount` of the file, or after a
-  restart. Busy/cancelled results are retried on the next pass.
+  restart. A storage-job cancel the user requested
+  (`POST /api/v1/games/storage/cancel`) is remembered the same way
+  (`error: cancelled_by_user`). Busy results and cancels caused by rest mode,
+  shutdown or a game starting are retried on the next pass;
+- tracks at most 64 `.pkg` files; further files are not mounted
+  automatically, logged once and counted per scan pass in
+  `auto_mount.overflow`.
 
 Auto mount needs the API service (it owns the storage job); with
 `[api] enabled = off` jobs are not accepted and nothing is mounted automatically.
@@ -105,8 +133,11 @@ refused.
 
 ### Auto-remove
 
-A Kraken-cache-backed title counts as present only while its `.pkg` exists, so
-`[library] remove_missing` treats a removed `.pkg` like a removed image.
+A Kraken-cache-backed title counts as missing only when its `.pkg` is
+definitely absent (ENOENT/ENOTDIR), so `[library] remove_missing` treats a
+removed `.pkg` like a removed image. An unreadable or corrupt cache marker, or
+any other stat error, keeps the title (unknown is never "missing"); a cache
+directory that is itself gone counts as missing.
 
 ## zstd-packed folder games (`[kraken] inject_ampr`)
 
@@ -117,6 +148,12 @@ with AMPR-emu-NG. When its fakelib is mounted, UniMount builds
 shared one from `<emulators>/ampr-emu-ng/` or `<emulators>/` (same validation
 as Kraken caches), else the bundled one. A fakelib that already ships
 AMPR-emu-NG is used as is; folders with only `ampr_assets.index` are unchanged.
+The overlay records what it was built from (`source.sig`: the fakelib tree
+signature, the bundled revision and both shared AMPR candidates' size and
+times) and is reused while that matches, so it is not recopied on every
+launch. Overlays of titles that are no longer registered by UniMount (no
+`mount.lnk`) are removed by the periodic fakelib cache cleanup unless mounted
+or in use.
 
 Emulator updates (`[emulators] update_enabled`) never replace an AMPR-emu-NG
 `libSceAmpr.sprx` with an upstream ampr_emu file or the other way round

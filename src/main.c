@@ -31,6 +31,7 @@
 #include "sm_kstuff.h"
 #include "sm_limits.h"
 #include "sm_mdbg.h"
+#include "sm_diag.h"
 #include "sm_paths.h"
 #include "sm_kraken_auto.h"
 #include "sm_kraken_compat.h"
@@ -714,6 +715,8 @@ shutdown:
   stop_game_lifecycle_watcher();
   sm_shellcore_service_stop();
   sm_scanner_shutdown();
+  // Diagnostics reads mdbg and app.db and logs: stop it before those go.
+  sm_diag_stop();
   sm_mdbg_shutdown();
   bool title_mounts_released = shutdown_title_mounts();
   bool image_mounts_released = false;

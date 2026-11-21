@@ -18,16 +18,22 @@
 // --- Takeover of a running Kraken Mount ---
 
 typedef enum {
-  SM_PEER_NONE = 0,  // nothing answered on the port
-  SM_PEER_OTHER,     // something answered, but not Kraken Mount
+  SM_PEER_NONE = 0,  // nothing listens on the port (connection refused)
+  SM_PEER_OTHER,     // a valid answer that is clearly not Kraken Mount
   SM_PEER_KRAKEN,    // real Kraken Mount
   SM_PEER_UNIMOUNT,  // our own compatible listener (carries "unimount")
+  SM_PEER_UNKNOWN,   // something listens, but its reply is not conclusive
 } sm_peer_kind_t;
 
-// Classify a GET /api/state reply. Real Kraken answers 200 with a JSON object
-// holding a string "version" and an array "games", without "unimount".
-sm_peer_kind_t sm_takeover_classify_state(int http_status, const char *body,
-                                          size_t body_len);
+// Classify the bytes a GET /api/state probe read from a listener before it
+// closed, reset or the probe deadline passed (head plus any body prefix).
+// Real Kraken answers 200 with a JSON object holding a string "version" and
+// an array "games", without "unimount"; a prefix that already holds both is
+// enough. No reply, a cut-off head, a 5xx or a cut-off body without those keys
+// is SM_PEER_UNKNOWN (never "absent"). *why receives a static reason. The
+// caller maps "connection refused" to SM_PEER_NONE itself.
+sm_peer_kind_t sm_takeover_classify_reply(const char *reply, size_t length,
+                                          char version[32], const char **why);
 
 typedef enum {
   SM_QUIT_ACCEPTED = 0,   // 2xx: Kraken exits shortly
@@ -127,7 +133,12 @@ void sm_auto_failure_record(sm_auto_failure_t *list, size_t count,
                             const char *error);
 void sm_auto_failure_forget(sm_auto_failure_t *list, size_t count,
                             const char *path);
+// Reason the job tap passes for a storage-job cancel the user requested
+// (not rest mode, shutdown or a game starting).
+#define SM_AUTO_REASON_USER_CANCELLED "cancelled_by_user"
+
 // Busy, cancelled or changed-while-reading results are retried, not recorded.
+// A user cancel (SM_AUTO_REASON_USER_CANCELLED) is recorded like a failure.
 bool sm_auto_error_is_transient(int status, const char *reason);
 
 typedef enum {
