@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-21T00:00:00Z",
+  "title": "Design System: UniMount",
+  "extensions": {
+    "context": {
+      "register": "Operate",
+      "primaryDevice": "PS5 browser on a TV, DualSense from the couch",
+      "primaryViewport": { "width": 1540, "height": 700, "devicePixelRatio": 1 },
+      "secondaryViewports": ["1920x1080", "1280x720", "phones and narrow windows (reflow)"],
+      "engine": "WebKit at Safari 17 level; no backdrop-filter; no Gamepad API",
+      "input": { "dpad": "arrow keys", "cross": "pointer click", "circle": "Escape" },
+      "delivery": "one self-contained HTML file with inline CSS and JS; no external fonts, images or requests; under 700 KB",
+      "languages": 31,
+      "rootFontSize": "max(16px, min(1.25vw, 2.222vh))"
+    },
+    "colorMeta": {
+      "ground": { "role": "neutral", "displayName": "Screen Ground", "canonical": "#0b0b0c", "tonalRamp": ["#0b0b0c", "#151517", "#1d1d20", "#2b2b2f", "#4a4a50", "#7c7c84", "#b9b9bf", "#ededf0"] },
+      "ink": { "role": "primary", "displayName": "Interface White", "canonical": "#ffffff", "tonalRamp": ["#262626", "#4d4d4d", "#737373", "#999999", "#b3b3b3", "#d6d6d6", "#e9e9e9", "#ffffff"] },
+      "ink-2": { "role": "neutral", "displayName": "Secondary White", "canonical": "rgba(255, 255, 255, .84)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)", "rgba(255,255,255,.9)"] },
+      "ink-3": { "role": "neutral", "displayName": "Tertiary White", "canonical": "rgba(255, 255, 255, .7)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)", "rgba(255,255,255,.9)"] },
+      "line": { "role": "neutral", "displayName": "Outline White", "canonical": "rgba(255, 255, 255, .9)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)", "rgba(255,255,255,.9)"] },
+      "line-soft": { "role": "neutral", "displayName": "Soft Outline", "canonical": "rgba(255, 255, 255, .34)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)", "rgba(255,255,255,.9)"] },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "rgba(255, 255, 255, .14)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)", "rgba(255,255,255,.9)"] },
+      "fill": { "role": "neutral", "displayName": "Glass Fill", "canonical": "rgba(12, 12, 14, .62)", "tonalRamp": ["rgba(12,12,14,.94)", "rgba(12,12,14,.88)", "rgba(12,12,14,.8)", "rgba(12,12,14,.72)", "rgba(12,12,14,.62)", "rgba(12,12,14,.45)", "rgba(12,12,14,.35)", "rgba(12,12,14,.3)"] },
+      "fill-focus": { "role": "neutral", "displayName": "Focus Fill", "canonical": "rgba(255, 255, 255, .16)", "tonalRamp": ["rgba(255,255,255,.14)", "rgba(255,255,255,.16)", "rgba(255,255,255,.24)", "rgba(255,255,255,.34)", "rgba(255,255,255,.45)", "rgba(255,255,255,.55)", "rgba(255,255,255,.7)", "rgba(255,255,255,.84)"] },
+      "fill-solid": { "role": "neutral", "displayName": "Solid Fill", "canonical": "#151517", "tonalRamp": ["#0b0b0c", "#101012", "#151517", "#1d1d20", "#2b2b2f", "#4a4a50", "#7c7c84", "#b9b9bf"] },
+      "sheet": { "role": "neutral", "displayName": "Sheet", "canonical": "#101012", "tonalRamp": ["#0b0b0c", "#101012", "#151517", "#1d1d20", "#2b2b2f", "#4a4a50", "#7c7c84", "#b9b9bf"] },
+      "art-placeholder": { "role": "neutral", "displayName": "Art Placeholder", "canonical": "#1d1d20", "tonalRamp": ["#0b0b0c", "#101012", "#151517", "#1d1d20", "#2b2b2f", "#4a4a50", "#7c7c84", "#b9b9bf"] },
+      "on-ink": { "role": "neutral", "displayName": "Text on White", "canonical": "#000000", "tonalRamp": ["#000000", "#0b0b0c", "#151517", "#1d1d20", "#2b2b2f", "#4a4a50", "#7c7c84", "#b9b9bf"] },
+      "ink-hover": { "role": "neutral", "displayName": "Pressed White", "canonical": "#e9e9e9", "tonalRamp": ["#262626", "#4d4d4d", "#737373", "#999999", "#b3b3b3", "#d6d6d6", "#e9e9e9", "#ffffff"] },
+      "failure-red": { "role": "secondary", "displayName": "Failure Red", "canonical": "#c62828", "tonalRamp": ["oklch(18% 0.06 27)", "oklch(28% 0.10 27)", "oklch(38% 0.14 27)", "oklch(48% 0.18 27)", "oklch(60% 0.17 27)", "oklch(72% 0.12 27)", "oklch(84% 0.07 27)", "oklch(94% 0.03 27)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The focused game's title on the home screen; two lines maximum; steps down to 4rem, 3.25rem and 2.75rem for longer titles." },
+      "headline": { "displayName": "Headline", "purpose": "Section page titles; dialog titles at 1.75rem; wordmark at 1.5rem with -0.01em tracking." },
+      "title": { "displayName": "Title", "purpose": "Facts line, shelf heading, drive names." },
+      "subtitle": { "displayName": "Subtitle", "purpose": "Block headings, list-row titles, shelf-cover names (1.0625rem)." },
+      "body-lg": { "displayName": "Body large", "purpose": "State sentence and hero action labels." },
+      "body": { "displayName": "Body", "purpose": "Buttons, tabs, inputs, lead paragraphs." },
+      "label": { "displayName": "Label", "purpose": "Stage labels, status line, metadata, hints, legend, small buttons. The couch-distance floor." },
+      "tag": { "displayName": "Tag", "purpose": "Error codes on covers with tabular numerals; inline tags at 0.8125rem." },
+      "path": { "displayName": "Path", "purpose": "Platform monospace for filesystem paths, job routes and the log view only." }
+    },
+    "shadows": [
+      { "name": "selected-ring", "value": "0 0 0 2px #ffffff", "purpose": "Second border on the selected shelf cover. A spread ring with no offset or blur; the system has no drop shadows." }
+    ],
+    "focus": [
+      { "name": "focus-control", "value": "outline: 3px solid #ffffff; outline-offset: 3px", "purpose": "Buttons; adds the Focus Fill." },
+      { "name": "focus-primary", "value": "outline: 3px solid #ffffff; outline-offset: 4px", "purpose": "Primary and delete-confirmation buttons." },
+      { "name": "focus-field", "value": "outline: 3px solid #ffffff; outline-offset: 2px", "purpose": "Inputs, selects, any tabindex element." },
+      { "name": "focus-tab", "value": "outline: 3px solid #ffffff; outline-offset: -3px", "purpose": "Section tabs; drawn inside the tab." },
+      { "name": "focus-cover", "value": "outline: 3px solid #ffffff; outline-offset: 5px", "purpose": "Shelf covers." }
+    ],
+    "scrims": [
+      { "name": "scrim-home", "value": "linear-gradient(180deg, rgba(0,0,0,.66) 0, rgba(0,0,0,0) 12%), linear-gradient(0deg, rgba(0,0,0,.9) 0, rgba(0,0,0,.8) 34%, rgba(0,0,0,.3) 52%, rgba(0,0,0,0) 64%), linear-gradient(90deg, rgba(0,0,0,.68) 0, rgba(0,0,0,.64) 32%, rgba(0,0,0,.6) 50%, rgba(0,0,0,.24) 64%, rgba(0,0,0,0) 80%)", "purpose": "Home screen over landscape key art: top band, bottom band, reading-side band. Mirrored for right-to-left." },
+      { "name": "scrim-cover-mode", "value": "reading-side band becomes solid #0b0b0c to 40%, rgba(11,11,12,.78) at 56%, transparent at 80%", "purpose": "When only portrait cover art exists; the cover sits at the far side at 72% brightness." },
+      { "name": "scrim-section", "value": "rgba(8, 8, 9, .9)", "purpose": "Uniform veil on every non-home view." },
+      { "name": "grain", "value": "SVG fractal-noise data URI, 160px tile, opacity .07", "purpose": "Dithers the stacked gradients so they do not band." },
+      { "name": "modal-veil", "value": "rgba(0, 0, 0, .72)", "purpose": "Behind dialogs." }
+    ],
+    "motion": [
+      { "name": "ease", "value": "cubic-bezier(.16, 1, .3, 1)", "purpose": "The only easing curve." },
+      { "name": "focus-and-crossfade", "value": "240ms", "purpose": "Art-layer opacity cross-fade, shelf-cover scale to 1.06, stage-tracker re-stamp (opacity .35 to 1). Nothing else animates; hover and switches change instantly." },
+      { "name": "reduced-motion", "value": "transition: none; animation: none", "purpose": "prefers-reduced-motion makes all three instant." }
+    ],
+    "breakpoints": [
+      { "name": "reflow", "value": "(max-width: 900px), (max-aspect-ratio: 1/1)" },
+      { "name": "job-strip-compact", "value": "(max-width: 1420px)" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "The default control: outlined rectangle over a translucent near-black fill, optional line icon.",
+      "html": "<button class=\"ds-btn\"><svg class=\"ds-i\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 7h10M18 7h2M4 17h4M12 17h8\"/><rect x=\"14\" y=\"5\" width=\"4\" height=\"4\"/><rect x=\"8\" y=\"15\" width=\"4\" height=\"4\"/></svg>Configure</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border: 1px solid rgba(255,255,255,.9); border-radius: 6px; background: rgba(12,12,14,.62); color: #fff; font: 400 18px/1.3 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; white-space: nowrap; cursor: pointer; } .ds-btn:hover { background: rgba(255,255,255,.16); } .ds-btn:focus, .ds-btn:focus-visible { outline: 3px solid #fff; outline-offset: 3px; background: rgba(255,255,255,.16); } .ds-btn:disabled { opacity: .45; cursor: default; } .ds-i { width: 1.25em; height: 1.25em; margin-right: 10px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Solid white with black bold text. One per screen or dialog.",
+      "html": "<button class=\"ds-btn-primary\"><svg class=\"ds-i-p\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M7 5l12 7-12 7z\"/></svg>Launch</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; min-width: 136px; min-height: 48px; padding: 0 18px; border: 1px solid rgba(255,255,255,.9); border-radius: 6px; background: #fff; color: #000; font: 700 20px/1.3 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; white-space: nowrap; cursor: pointer; } .ds-btn-primary:hover { background: #e9e9e9; } .ds-btn-primary:focus, .ds-btn-primary:focus-visible { outline: 3px solid #fff; outline-offset: 4px; } .ds-i-p { width: 1.25em; height: 1.25em; margin-right: 10px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }"
+    },
+    {
+      "name": "Delete Confirmation Button",
+      "kind": "button",
+      "refersTo": "button-delete-confirm",
+      "description": "Solid red; only the final, irreversible delete step. Every earlier destructive step is an ordinary outlined button.",
+      "html": "<button class=\"ds-btn-delete\">Delete permanently</button>",
+      "css": ".ds-btn-delete { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border: 1px solid #c62828; border-radius: 6px; background: #c62828; color: #fff; font: 700 18px/1.3 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; white-space: nowrap; cursor: pointer; } .ds-btn-delete:focus, .ds-btn-delete:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }"
+    },
+    {
+      "name": "Section Tabs",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "Text tabs in the top bar; the selected tab is bold with a 3px white underline.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">Library</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">Sources</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">Storage</button></div>",
+      "css": ".ds-tabs { display: flex; align-items: center; } .ds-tab { position: relative; display: flex; align-items: center; height: 48px; padding: 0 16px; margin: 0 4px; border: 0; border-radius: 6px; background: none; color: rgba(255,255,255,.84); font: 400 18px/1.3 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; cursor: pointer; } .ds-tab[aria-selected=\"true\"] { color: #fff; font-weight: 700; } .ds-tab[aria-selected=\"true\"]::after { content: \"\"; position: absolute; left: 16px; right: 16px; bottom: 3px; height: 3px; background: #fff; } .ds-tab:focus, .ds-tab:focus-visible { outline: 3px solid #fff; outline-offset: -3px; color: #fff; }"
+    },
+    {
+      "name": "Stage Tracker",
+      "kind": "custom",
+      "refersTo": "stage-segment",
+      "description": "Five segments stating how far a game got: done, deferred, pending, not reached, failed. State is carried by fill, outline style and glyph together.",
+      "html": "<ol class=\"ds-tracker\"><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Found</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Prepared</span></li><li class=\"ds-stage ds-lazy\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M8 6l10 6-10 6z\"/></svg></span><span class=\"ds-stage-label\">Mounted</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Registered</span></li><li class=\"ds-stage ds-failed\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></span><span class=\"ds-stage-label\">Running</span></li></ol>",
+      "css": ".ds-tracker { display: flex; margin: 0; padding: 0; list-style: none; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-stage { width: 92px; margin-right: 6px; text-align: center; } .ds-seg { display: flex; align-items: center; justify-content: center; height: 24px; border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.45); color: #000; } .ds-seg svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; } .ds-done .ds-seg { background: #fff; } .ds-lazy .ds-seg { color: #fff; } .ds-failed .ds-seg { background: #c62828; border-color: #c62828; color: #fff; } .ds-stage-label { display: block; margin-top: 6px; color: rgba(255,255,255,.84); white-space: nowrap; } .ds-done .ds-stage-label, .ds-failed .ds-stage-label { color: #fff; }"
+    },
+    {
+      "name": "Shelf Cover",
+      "kind": "card",
+      "refersTo": "shelf-card",
+      "description": "One game on the cover shelf: 16:9 art over a caption. The selected cover is framed, ringed and enlarged from its bottom edge.",
+      "html": "<div class=\"ds-shelf\"><button class=\"ds-card\"><span class=\"ds-thumb\"><span class=\"ds-initials\">AB</span></span><span class=\"ds-cap\"><span class=\"ds-name\">Game title</span><span class=\"ds-word\">Ready</span></span></button><button class=\"ds-card ds-selected ds-failed\"><span class=\"ds-thumb\"><span class=\"ds-initials\">CD</span><span class=\"ds-code\">CE-000000-0</span></span><span class=\"ds-cap\"><span class=\"ds-name\">Game title</span><span class=\"ds-word\">Launch failed</span></span></button></div>",
+      "css": ".ds-shelf { display: flex; padding: 16px 8px; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-card { position: relative; flex: none; display: flex; flex-direction: column; width: 240px; margin-right: 16px; padding: 0; border: 1px solid rgba(255,255,255,.34); border-radius: 6px; background: #151517; color: #fff; text-align: start; overflow: hidden; cursor: pointer; transform-origin: center bottom; transition: transform 240ms cubic-bezier(.16,1,.3,1); } .ds-thumb { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #1d1d20; } .ds-initials { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: rgba(255,255,255,.7); } .ds-cap { height: 68px; padding: 6px 14px 8px; display: flex; flex-direction: column; justify-content: center; } .ds-name { font-size: 17px; font-weight: 700; line-height: 1.3; } .ds-word { margin-top: 2px; font-size: 16px; color: rgba(255,255,255,.84); } .ds-failed .ds-word { color: #fff; font-weight: 700; } .ds-code { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 4px; background: #c62828; color: #fff; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; } .ds-card:hover { border-color: #fff; } .ds-card.ds-selected { border-color: #fff; box-shadow: 0 0 0 2px #fff; transform: scale(1.06); z-index: 2; } .ds-card:focus, .ds-card:focus-visible { outline: 3px solid #fff; outline-offset: 5px; } @media (prefers-reduced-motion: reduce) { .ds-card { transition: none; } }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Opaque field with a white outline; used for filters, paths and numeric settings.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Filter games\">",
+      "css": ".ds-input { min-height: 44px; padding: 0 14px; border: 1px solid rgba(255,255,255,.9); border-radius: 6px; background: #151517; color: #fff; caret-color: #fff; font: 400 18px/1.3 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-input::placeholder { color: rgba(255,255,255,.7); opacity: 1; } .ds-input:focus, .ds-input:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }"
+    },
+    {
+      "name": "Switch",
+      "kind": "custom",
+      "refersTo": "switch-track",
+      "description": "Rectangular toggle with a square thumb that jumps sides without animation; the whole row is the target.",
+      "html": "<label class=\"ds-switch\"><span>Setting name</span><input type=\"checkbox\" checked><span class=\"ds-track\"></span></label>",
+      "css": ".ds-switch { position: relative; display: flex; align-items: center; justify-content: space-between; min-height: 48px; gap: 16px; cursor: pointer; color: #fff; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; } .ds-track { flex: none; position: relative; width: 52px; height: 28px; border: 1px solid rgba(255,255,255,.9); border-radius: 4px; background: #151517; } .ds-track::after { content: \"\"; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 2px; background: rgba(255,255,255,.7); } .ds-switch input:checked + .ds-track { background: #fff; } .ds-switch input:checked + .ds-track::after { left: auto; right: 3px; background: #000; } .ds-switch input:focus + .ds-track { outline: 3px solid #fff; outline-offset: 3px; }"
+    },
+    {
+      "name": "Meter",
+      "kind": "custom",
+      "description": "Storage and job progress: outlined bar with a solid white fill, always beside a text figure.",
+      "html": "<div class=\"ds-meter\" role=\"progressbar\" aria-valuenow=\"62\" aria-valuemin=\"0\" aria-valuemax=\"100\"><span style=\"width:62%\"></span></div>",
+      "css": ".ds-meter { position: relative; width: 320px; height: 16px; border: 1px solid rgba(255,255,255,.9); border-radius: 3px; overflow: hidden; background: rgba(0,0,0,.4); } .ds-meter > span { position: absolute; top: 0; bottom: 0; left: 0; background: #fff; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Cover Is the Screen",
+    "overview": "UniMount is an Operate surface. Its primary device is the PS5's own browser on a TV, driven with a DualSense from the couch; the measured viewport there is 1540×700 at device pixel ratio 1. The focused game's key art fills that whole viewport, a dark scrim makes the left and bottom readable, and everything UniMount itself contributes is white: type, 1px outlines, and one solid white rectangle for the action that matters. Every other game is one step away on a cover shelf along the bottom.\n\nThe system is deliberately thin. There is no brand colour, no decorative surface, no illustration and no icon set beyond a handful of stroked line symbols. White is the only interface colour; one red marks failure. Controls are rectangles with small corners, never circles or pills. The game's own artwork is the only imagery, and where a game has none its initials stand in on a flat dark tile.\n\nThe technical frame is part of the design, not a footnote to it. The interface is a single self-contained file served by the console (no external fonts, images or requests) and must stay under 700 KB. The console browser is WebKit at Safari 17 level with no `backdrop-filter` and no Gamepad API: the D-pad arrives as arrow keys, cross as a pointer click, circle as Escape. So every state has to read from across the room, focus has to be unmistakable, and nothing may depend on blur, hover or a font download.",
+    "keyCharacteristics": [
+      "Full-bleed game art under a scrim; interface drawn in white on top of it.",
+      "One solid white rectangle per screen for the primary action; everything else is outlined.",
+      "A five-segment stage tracker that states launch truth with shape and glyph, not hue.",
+      "Platform system sans in two weights, tabular numerals for facts and codes.",
+      "Sized in rem against a root that scales with the viewport, so the TV layout holds at 1540×700, 1280×720 and 1920×1080.",
+      "One 240ms motion, used for focus and the art cross-fade, and nothing else."
+    ],
+    "rules": [
+      { "name": "The One White Rule", "body": "White is the only interface colour. Emphasis comes from opacity (100, 84, 70 percent), weight and solid-versus-outline, never from a second hue.", "section": "colors" },
+      { "name": "The Failure Red Rule", "body": "Red means something failed. It appears only where the console reported a failure, plus the single irreversible-delete confirmation. It is never a brand accent, a hover state or a decoration.", "section": "colors" },
+      { "name": "The Never Colour Alone Rule", "body": "Every state red or white carries is also carried by shape and words: a check, a play triangle or a cross inside the segment, a dashed outline for pending, a bold status word with a cross on the cover.", "section": "colors" },
+      { "name": "The Two Weights Rule", "body": "Only 400 and 700. No light, medium or black, no italics, no uppercase transforms, no letter-spaced labels. Negative tracking is reserved for the display title and wordmark.", "section": "typography" },
+      { "name": "The Couch Floor Rule", "body": "Anything the owner must read from the couch is 1rem or larger. Sizes below that are limited to tags, key caps and the log.", "section": "typography" },
+      { "name": "The Tabular Rule", "body": "Sizes, counts, timestamps, error codes and progress figures use tabular numerals so they do not jitter as they update.", "section": "typography" },
+      { "name": "The One Viewport Rule", "body": "On the TV the home screen fits 1540×700 with nothing below the fold. A new element has to displace something; it cannot extend the page.", "section": "layout" },
+      { "name": "The No Blur Rule", "body": "Never rely on `backdrop-filter`, glass blur or soft shadows for legibility. If text must sit on art, the scrim or an opaque fill does the work.", "section": "elevation" },
+      { "name": "The Rectangle Rule", "body": "No circles, no pills, no fully rounded ends. The largest radius in the system is 6px.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do let the focused game's own artwork fill the screen, and use only that artwork as imagery.",
+      "Do keep exactly one solid white primary button per screen or dialog; outline the rest.",
+      "Do show focus as a 3px solid white outline with an offset, on every focusable element, with no dependence on hover.",
+      "Do pair every red or white state with a glyph and a word.",
+      "Do size in rem so the layout scales with the root, and check new work at 1540×700 first.",
+      "Do keep everything inline: system fonts, inline SVG line symbols, data-URI textures. The file stays self-contained and under 700 KB.",
+      "Do mirror every horizontal offset for right-to-left languages, and leave room for long translations (labels do not wrap; containers truncate with an ellipsis).",
+      "Do make reduced motion instant: no cross-fade, no scale transition, no re-stamp."
+    ],
+    "donts": [
+      "Don't introduce a second interface colour, a tinted surface, or red for anything other than failure and the final delete confirmation.",
+      "Don't use circles, pills or radii above 6px, including for toggles, avatars, badges and progress.",
+      "Don't use `backdrop-filter`, blur, glow or offset drop shadows; the console cannot render the first and the system does not want the others.",
+      "Don't load a webfont, an external image, or any request beyond the payload's own API.",
+      "Don't add a third weight, italics, uppercase transforms or letter-spaced labels.",
+      "Don't animate anything except focus and the art cross-fade, and never longer than 240ms.",
+      "Don't make a destructive action solid, red or first in a row before its final confirmation step.",
+      "Don't depend on the Gamepad API or on buttons that were not measured on the console; arrow keys, a click and Escape are the whole input model."
+    ]
+  }
+}
