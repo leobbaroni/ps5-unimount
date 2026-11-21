@@ -93,15 +93,17 @@ Lines written while waiting in steps 2-3 go to the current `debug.log` (with a p
 
 Stop requests (`should_stop_requested`, rule `sm_stop_decide`):
 
-- A signal or the STOP file is a deferrable request. While the lifecycle watcher tracks an active game (`sm_game_lifecycle_has_active_game()`, including a pending same-app handoff), the stop is deferred: logged and notified once, everything keeps running, and the shutdown starts once that game has exited and its on-exit cleanup has run.
-- A second request while deferred stops at once. So do requests that cannot wait: the console shutting down (`SceSystemStateMgrInfo=SHUTDOWN_ON_GOING`) and a scanner failure.
+- A signal or the STOP file is a deferrable request, judged against the active game (`sm_game_lifecycle_has_active_game()`, including a pending same-app handoff) and the kind of its session (`sm_session_kind`: alias-only, or overlay = any unionfs layer, anything on or inside `app0`, or NSFS backport redirects). The session kind is published lock-free by `sm_fakelib.c` and `sm_pkg_backport.c` on every unlock, because `should_stop_requested()` is called with their locks held.
+- STOP file: deferred for any active game. Signal: deferred only for an overlay session; an alias-only session stops at once with the normal teardown, because PS5 Payload Manager follows SIGTERM with SIGKILL after 1.5 s.
+- A deferred stop is logged and notified once; everything keeps running and the shutdown starts once the game has exited and its on-exit cleanup has run.
+- A second request stops at once. So do requests that cannot wait: the console shutting down (`SceSystemStateMgrInfo=SHUTDOWN_ON_GOING`) and a scanner failure.
 
 Shutdown (also reached on a failed or interrupted startup step):
 
 1. Stop the automatic mount, then the compatible listener, the AMPR updater and the API service.
-2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service. As the lifecycle watcher stops it tears down the fakelib sandbox layers and NSFS backport redirects, except those of a game that is still alive, still launching in its sandbox, or in a same-app handoff (`sm_shutdown_keeps_game_layers`): those are kept and each one is logged.
+2. Stop the ShellCore flags monitor and hooks, the lifecycle watcher and the ShellCore service. As the lifecycle watcher stops it tears down the fakelib sandbox layers and NSFS backport redirects, except an overlay session whose game is still alive, still launching in its sandbox, or in a same-app handoff (`sm_shutdown_keeps_game_layers`): those are kept and each one is logged. An alias-only session is always torn down (non-forced), live game or not.
 3. Shut down the scanner; stop diagnostics (it reads mdbg and app.db, so it goes before them); shut down mdbg.
-4. Release title layers, then image mounts. The `/system_ex/app/<TID>` stack of a live game is kept without an unmount attempt; a kept stack counts as remaining, so image teardown is skipped as for a busy stack. Only if both succeed is the kstuff no-automount sentinel removed.
+4. Release title layers, then image mounts. The `/system_ex/app/<TID>` stack of a kept overlay session is kept without an unmount attempt; a kept stack counts as remaining, so image teardown is skipped as for a busy stack. Only if both succeed is the kstuff no-automount sentinel removed.
 5. Shut down app.db access, remove the ownership ledger, close the log.
 
 Layers kept for a live game are not adopted by a later instance; see "Stopping with a game running" in [`unimount-ownership.md`](unimount-ownership.md).

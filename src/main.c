@@ -179,9 +179,24 @@ static void active_game_label(char title_id[MAX_TITLE_ID]) {
     (void)strlcpy(title_id, "a game", MAX_TITLE_ID);
 }
 
-static void latch_stop(bool immediate, bool game_active) {
+static const char *session_kind_name(sm_session_kind_t kind) {
+  return kind == SM_SESSION_OVERLAY   ? "overlay layers"
+         : kind == SM_SESSION_ALIASES ? "only directory aliases"
+                                      : "no layers";
+}
+
+// Layers of ours in the active game's sandbox (lock-free).
+static sm_session_kind_t active_session_kind(void) {
+  if (sm_pkg_backport_has_redirects())
+    return SM_SESSION_OVERLAY;
+  return sm_fakelib_game_session_kind();
+}
+
+static void latch_stop(const sm_stop_facts_t *facts,
+                       sm_stop_decision_t decision) {
   if (atomic_exchange_explicit(&g_stop_latched, true, memory_order_acq_rel))
     return;
+  bool immediate = facts->immediate;
   const char *reason = "STOP file " KILL_FILE;
   if (immediate) {
     reason = (const char *)atomic_load_explicit(&g_shutdown_stop_reason_bits,
@@ -194,10 +209,16 @@ static void latch_stop(bool immediate, bool game_active) {
   (void)strlcpy(g_stop_latched_reason, reason, sizeof(g_stop_latched_reason));
   char title_id[MAX_TITLE_ID];
   active_game_label(title_id);
-  if (game_active) {
-    log_debug("[SHUTDOWN] stopping now while %s is running (%s); its layers "
-              "are kept", title_id,
-              immediate ? reason : "second stop request");
+  const char *why = immediate           ? reason
+                    : facts->requests >= 2u ? "second stop request"
+                                            : reason;
+  if (decision == SM_STOP_NOW_KEEP) {
+    log_debug("[SHUTDOWN] stopping now while %s is running (%s); its overlay "
+              "layers are kept", title_id, why);
+  } else if (facts->game_active) {
+    log_debug("[SHUTDOWN] stopping now while %s is running (%s): %s in its "
+              "sandbox, normal teardown", title_id, why,
+              session_kind_name(facts->session));
   } else if (atomic_load_explicit(&g_stop_deferred, memory_order_acquire)) {
     log_debug("[SHUTDOWN] game closed; continuing the deferred shutdown");
   }
@@ -226,8 +247,15 @@ bool should_stop_requested(void) {
               g_stop_signals != 0 ? "signal" : "STOP file " KILL_FILE);
   }
 
-  bool game_active = sm_game_lifecycle_has_active_game();
-  sm_stop_decision_t decision = sm_stop_decide(requests, immediate, game_active);
+  sm_stop_facts_t facts = {
+      .requests = requests,
+      .by_signal = g_stop_signals != 0,
+      .immediate = immediate,
+      .game_active = sm_game_lifecycle_has_active_game(),
+  };
+  if (facts.game_active)
+    facts.session = active_session_kind();
+  sm_stop_decision_t decision = sm_stop_decide(&facts);
   if (decision == SM_STOP_NONE)
     return false;
   if (decision == SM_STOP_DEFER) {
@@ -235,12 +263,19 @@ bool should_stop_requested(void) {
                                   memory_order_acq_rel)) {
       char title_id[MAX_TITLE_ID];
       active_game_label(title_id);
-      log_debug("[SHUTDOWN] deferred: %s is running", title_id);
+      if (facts.by_signal) {
+        // PS5 Payload Manager sends SIGKILL 1.5 s after SIGTERM.
+        log_debug("[SHUTDOWN] deferred: %s is running (signal, overlay layers; "
+                  "a SIGKILL that follows leaves them orphaned)", title_id);
+      } else {
+        log_debug("[SHUTDOWN] deferred: %s is running (STOP file, %s)",
+                  title_id, session_kind_name(facts.session));
+      }
       notify_system_l10n(SM_L10N_SHUTDOWN_DEFERRED, title_id);
     }
     return false;
   }
-  latch_stop(immediate, game_active);
+  latch_stop(&facts, decision);
   return true;
 }
 
@@ -1013,13 +1048,12 @@ shutdown:
   // Diagnostics reads mdbg and app.db and logs: stop it before those go.
   sm_diag_stop();
   sm_mdbg_shutdown();
-  // A game still alive here (forced or immediate stop) keeps its sandbox
-  // layers and its /system_ex/app/<TID> stack; see sm_shutdown_keeps_game_layers.
+  // A game still alive here with overlay layers (forced or immediate stop)
+  // keeps them and its /system_ex/app/<TID> stack; an alias-only game takes
+  // the normal teardown. See sm_shutdown_keeps_game_layers.
   char kept_titles[4][MAX_TITLE_ID];
   size_t kept_count = 0;
   char kept_title[MAX_TITLE_ID];
-  if (sm_game_lifecycle_shutdown_live_title(kept_title))
-    (void)sm_title_list_add(kept_titles, &kept_count, 4, kept_title);
   if (sm_fakelib_game_kept_title(kept_title))
     (void)sm_title_list_add(kept_titles, &kept_count, 4, kept_title);
   sm_pkg_backport_add_kept_titles(kept_titles, &kept_count, 4);

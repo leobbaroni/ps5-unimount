@@ -453,19 +453,76 @@ static void test_startup_wait(void) {
   assert(sm_restart_timeout_decide(false) == SM_RESTART_GIVE_UP);
 }
 
+static void test_session_kind(void) {
+  static const char app0[] = "/mnt/sandbox/PPSA01234_000/app0";
+  // Plain directory aliases at the sandbox root.
+  assert(sm_sandbox_layer_kind(false, "/mnt/sandbox/PPSA01234_000/data", app0) ==
+         SM_LAYER_ALIAS);
+  assert(sm_sandbox_layer_kind(false, "/mnt/sandbox/PPSA01234_000/mnt/usb0",
+                               app0) == SM_LAYER_ALIAS);
+  assert(sm_sandbox_layer_kind(
+             false, "/mnt/sandbox/PPSA01234_000/preinst/common/font", app0) ==
+         SM_LAYER_ALIAS);
+  // A sibling whose name only starts like app0 is not inside it.
+  assert(sm_sandbox_layer_kind(false, "/mnt/sandbox/PPSA01234_000/app0x",
+                               app0) == SM_LAYER_ALIAS);
+  // fakelib/fakelib2 unionfs on common/lib, app0 cover, app0/kraken.
+  assert(sm_sandbox_layer_kind(true, "/mnt/sandbox/PPSA01234_000/x/common/lib",
+                               app0) == SM_LAYER_OVERLAY);
+  assert(sm_sandbox_layer_kind(false, app0, app0) == SM_LAYER_OVERLAY);
+  assert(sm_sandbox_layer_kind(false, "/mnt/sandbox/PPSA01234_000/app0/kraken",
+                               app0) == SM_LAYER_OVERLAY);
+  // Unknown app0: only the filesystem type decides.
+  assert(sm_sandbox_layer_kind(false, app0, "") == SM_LAYER_ALIAS);
+  assert(sm_sandbox_layer_kind(false, app0, NULL) == SM_LAYER_ALIAS);
+
+  const sm_layer_kind_t image[] = {SM_LAYER_ALIAS, SM_LAYER_ALIAS,
+                                   SM_LAYER_ALIAS};
+  const sm_layer_kind_t kraken[] = {SM_LAYER_OVERLAY, SM_LAYER_ALIAS,
+                                    SM_LAYER_ALIAS, SM_LAYER_OVERLAY,
+                                    SM_LAYER_OVERLAY, SM_LAYER_ALIAS};
+  assert(sm_session_kind(NULL, 0, false) == SM_SESSION_NONE);
+  assert(sm_session_kind(image, 3, false) == SM_SESSION_ALIASES);
+  assert(sm_session_kind(kraken, 6, false) == SM_SESSION_OVERLAY);
+  // NSFS backport redirects count as an overlay, with or without aliases.
+  assert(sm_session_kind(image, 3, true) == SM_SESSION_OVERLAY);
+  assert(sm_session_kind(NULL, 0, true) == SM_SESSION_OVERLAY);
+}
+
 static void test_stop_decide(void) {
-  // No request.
-  assert(sm_stop_decide(0, false, false) == SM_STOP_NONE);
-  assert(sm_stop_decide(0, false, true) == SM_STOP_NONE);
-  // First request without a game: stop now; with a game: defer.
-  assert(sm_stop_decide(1, false, false) == SM_STOP_NOW);
-  assert(sm_stop_decide(1, false, true) == SM_STOP_DEFER);
-  // Second request while deferred forces the stop.
-  assert(sm_stop_decide(2, false, true) == SM_STOP_NOW);
-  assert(sm_stop_decide(7, false, true) == SM_STOP_NOW);
-  // Console shutdown / internal failure cannot wait.
-  assert(sm_stop_decide(0, true, true) == SM_STOP_NOW);
-  assert(sm_stop_decide(1, true, true) == SM_STOP_NOW);
+  const sm_session_kind_t kinds[] = {SM_SESSION_NONE, SM_SESSION_ALIASES,
+                                     SM_SESSION_OVERLAY};
+  for (size_t k = 0; k < 3; ++k) {
+    bool overlay = kinds[k] == SM_SESSION_OVERLAY;
+    for (int signal = 0; signal < 2; ++signal) {
+      sm_stop_facts_t f = {.by_signal = signal != 0, .session = kinds[k]};
+      // No request, with or without a game.
+      assert(sm_stop_decide(&f) == SM_STOP_NONE);
+      f.game_active = true;
+      assert(sm_stop_decide(&f) == SM_STOP_NONE);
+      // First request without an active game: normal stop.
+      f.requests = 1;
+      f.game_active = false;
+      assert(sm_stop_decide(&f) == SM_STOP_NOW);
+      // First request with a game. STOP file: always defer. Signal (SIGKILL
+      // may follow): defer only for an overlay session.
+      f.game_active = true;
+      assert(sm_stop_decide(&f) ==
+             (signal && !overlay ? SM_STOP_NOW : SM_STOP_DEFER));
+      // Second request: stop now; keep only an overlay session's layers.
+      f.requests = 2;
+      assert(sm_stop_decide(&f) == (overlay ? SM_STOP_NOW_KEEP : SM_STOP_NOW));
+      f.requests = 9;
+      assert(sm_stop_decide(&f) == (overlay ? SM_STOP_NOW_KEEP : SM_STOP_NOW));
+      // Console shutdown / scanner failure cannot wait.
+      f.requests = signal ? 1u : 0u;
+      f.immediate = true;
+      assert(sm_stop_decide(&f) == (overlay ? SM_STOP_NOW_KEEP : SM_STOP_NOW));
+      f.game_active = false;
+      assert(sm_stop_decide(&f) == SM_STOP_NOW);
+    }
+  }
+  assert(sm_stop_decide(NULL) == SM_STOP_NONE);
 }
 
 static void test_kept_layers(void) {
@@ -473,6 +530,14 @@ static void test_kept_layers(void) {
   // Nothing recorded: nothing to keep.
   assert(!sm_shutdown_keeps_game_layers(&f));
   assert(!sm_shutdown_keeps_game_layers(NULL));
+  // Alias-only session of a live game: normal (non-forced) teardown.
+  f.has_layers = true;
+  f.pid = 298;
+  f.pid_alive = true;
+  f.sandbox_exists = true;
+  f.handoff_pending = true;
+  assert(!sm_shutdown_keeps_game_layers(&f));
+  f = (sm_layer_owner_facts_t){.overlay = true};
   f.has_layers = true;
   // Pre-spawn session (sandbox ready, no process yet).
   assert(!sm_shutdown_keeps_game_layers(&f));
@@ -519,6 +584,7 @@ static void test_kept_layers(void) {
 
 int main(void) {
   test_startup_wait();
+  test_session_kind();
   test_stop_decide();
   test_kept_layers();
   test_classify_state();
@@ -531,7 +597,8 @@ int main(void) {
   test_failures();
   test_auto_decide();
   test_ampr();
-  puts("unimount logic: startup wait, stop deferral, kept layers, takeover, "
+  puts("unimount logic: startup wait, session kinds, stop deferral, kept "
+       "layers, takeover, "
        "adoption, ledger, compat listener, auto-mount and AMPR selection passed");
   return 0;
 }

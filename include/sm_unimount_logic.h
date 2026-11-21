@@ -102,28 +102,64 @@ typedef enum {
 // alongside it.
 sm_restart_timeout_t sm_restart_timeout_decide(bool app_running);
 
+// --- Sandbox session kinds ---
+
 typedef enum {
-  SM_STOP_NONE = 0,  // no stop request
-  SM_STOP_NOW,       // shut down now
-  SM_STOP_DEFER,     // keep running until the active game has exited
+  SM_LAYER_ALIAS = 0,  // plain nullfs directory alias outside app0
+  SM_LAYER_OVERLAY,    // a unionfs layer, or anything mounted on/inside app0
+} sm_layer_kind_t;
+
+// app0_path is the sandbox's /mnt/sandbox/<TID>_NNN/app0.
+sm_layer_kind_t sm_sandbox_layer_kind(bool unionfs, const char *mount_path,
+                                      const char *app0_path);
+
+typedef enum {
+  SM_SESSION_NONE = 0,  // no layers of ours in the live game's sandbox
+  SM_SESSION_ALIASES,   // only plain directory aliases (/data, storage, fonts)
+  SM_SESSION_OVERLAY,   // a fakelib/fakelib2 overlay, an app0 cover, app0/kraken
+                        // or NSFS backport redirects
+} sm_session_kind_t;
+
+// redirects: NSFS backport redirects are installed for the game.
+sm_session_kind_t sm_session_kind(const sm_layer_kind_t *layers, size_t count,
+                                  bool redirects);
+
+// --- Stop requests ---
+
+typedef enum {
+  SM_STOP_NONE = 0,   // no stop request
+  SM_STOP_NOW,        // shut down now with the normal teardown
+  SM_STOP_DEFER,      // keep running until the active game has exited
+  SM_STOP_NOW_KEEP,   // shut down now, keeping the live game's overlay layers
 } sm_stop_decision_t;
 
-// requests counts deferrable stop requests (signals, STOP file). immediate is
-// a stop that cannot wait (console shutting down, scanner failure). A second
-// deferrable request forces the stop.
-sm_stop_decision_t sm_stop_decide(unsigned requests, bool immediate,
-                                  bool game_active);
+typedef struct {
+  unsigned requests;  // deferrable requests so far (signals and STOP files)
+  bool by_signal;     // at least one was a signal: a SIGKILL may follow
+                      // (PS5 Payload Manager kills 1.5 s after SIGTERM)
+  bool immediate;     // cannot wait (console shutdown, scanner failure)
+  bool game_active;   // the lifecycle tracks an active game
+  sm_session_kind_t session;  // layers of ours in that game's sandbox
+} sm_stop_facts_t;
+
+// STOP file: defer for any active game. Signal: defer only for an overlay
+// session (alias-only sessions take the normal teardown, verified safe on
+// hardware). A second request or an immediate stop never waits; it keeps an
+// overlay session's layers and tears an alias-only session down as usual.
+sm_stop_decision_t sm_stop_decide(const sm_stop_facts_t *facts);
 
 typedef struct {
   bool has_layers;       // the session still holds mounts or redirects
+  bool overlay;          // the session is SM_SESSION_OVERLAY
   int32_t pid;           // game process bound to the session, 0 before exec
   bool pid_alive;        // that process still exists
   bool handoff_pending;  // the lifecycle awaits a same-app replacement for it
   bool sandbox_exists;   // a /mnt/sandbox/<TID>_NNN directory exists
 } sm_layer_owner_facts_t;
 
-// A shutdown keeps a session's sandbox layers when they may still be in use:
-// a live process, a launch not yet bound to a process, or a same-app handoff.
+// A shutdown keeps an overlay session's layers when they may still be in
+// use: a live process, a launch not yet bound to a process, or a same-app
+// handoff. Alias-only sessions are always torn down (non-forced).
 bool sm_shutdown_keeps_game_layers(const sm_layer_owner_facts_t *facts);
 
 // Small set of title ids (no duplicates, invalid ids rejected).

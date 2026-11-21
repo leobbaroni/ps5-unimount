@@ -81,8 +81,6 @@ static _Atomic uint64_t g_app_focus_state;
 // Title storage is owned exclusively by the lifecycle thread. Other threads
 // consume only atomically published state through public helpers.
 static char g_active_game_title_id[MAX_TITLE_ID];
-// Written by the lifecycle thread as it stops; read after it was joined.
-static char g_shutdown_live_title_id[MAX_TITLE_ID];
 
 static bool register_game_exit_watch(int kq, pid_t pid);
 static void handle_game_exec(int kq, pid_t pid);
@@ -1162,13 +1160,10 @@ static void *game_lifecycle_watcher_main(void *arg) {
   const char *handoff_title_id =
       g_pending_game_exit.active ? g_pending_game_exit.title_id : NULL;
   pid_t live_pid = atomic_load(&g_active_game_pid);
-  g_shutdown_live_title_id[0] = '\0';
   if (live_pid > 0 && is_process_alive(live_pid) &&
       g_active_game_title_id[0] != '\0') {
-    (void)strlcpy(g_shutdown_live_title_id, g_active_game_title_id,
-                  sizeof(g_shutdown_live_title_id));
     log_debug("  [GAME] stopping with a live game: %s pid=%ld",
-              g_shutdown_live_title_id, (long)live_pid);
+              g_active_game_title_id, (long)live_pid);
   }
   sm_fakelib_game_shutdown(handoff_title_id);
   sm_pkg_backport_shutdown(handoff_title_id);
@@ -1274,11 +1269,6 @@ void stop_game_lifecycle_watcher(void) {
 bool sm_game_lifecycle_has_active_game(void) {
   return atomic_load(&g_active_game_pid) > 0 ||
          atomic_load(&g_game_exit_handoff_pending);
-}
-
-bool sm_game_lifecycle_shutdown_live_title(char title_id[MAX_TITLE_ID]) {
-  (void)strlcpy(title_id, g_shutdown_live_title_id, MAX_TITLE_ID);
-  return title_id[0] != '\0';
 }
 
 int32_t sm_game_lifecycle_active_pid(void) {

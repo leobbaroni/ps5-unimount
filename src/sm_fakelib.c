@@ -12,6 +12,7 @@
 #include "sm_diag.h"
 #include "sm_path_utils.h"
 #include "sm_paths.h"
+#include "sm_pkg_backport.h"
 #include "sm_runtime.h"
 #include "sm_scan.h"
 #include "sm_types.h"
@@ -19,6 +20,7 @@
 #include "sm_unimount_logic.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -113,6 +115,34 @@ static bool fakelib_session_active(void) {
   return g_fakelib_mount.layer_count > 0;
 }
 
+// Published on every unlock: should_stop_requested() reads it while this
+// mutex may be held by its own caller.
+static _Atomic int g_fakelib_session_kind = SM_SESSION_NONE;
+
+static sm_session_kind_t fakelib_session_kind_locked(void) {
+  sm_layer_kind_t kinds[sizeof(g_fakelib_mount.layers) /
+                        sizeof(g_fakelib_mount.layers[0])];
+  size_t count = 0;
+  for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+    const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+    if (!layer->source_path[0] || !layer->owned_mount)
+      continue;
+    kinds[count++] = sm_sandbox_layer_kind(
+        layer->label && strcmp(layer->label, "directory") != 0,
+        layer->mount_path, g_fakelib_mount.sandbox_app0_path);
+  }
+  return sm_session_kind(kinds, count, false);
+}
+
+static void unlock_fakelib_session(void) {
+  atomic_store(&g_fakelib_session_kind, (int)fakelib_session_kind_locked());
+  pthread_mutex_unlock(&g_fakelib_mutex);
+}
+
+sm_session_kind_t sm_fakelib_game_session_kind(void) {
+  return (sm_session_kind_t)atomic_load(&g_fakelib_session_kind);
+}
+
 bool sm_fakelib_game_feature_enabled(void) {
   return runtime_config().backport_fakelib_enabled;
 }
@@ -130,7 +160,7 @@ bool sm_fakelib_source_is_in_use(const char *path) {
     strlcpy(source, layer->source_path, sizeof(source));
     break; // The session owns one common/lib overlay.
   }
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
   return source[0] && paths_overlap(path, source);
 }
 
@@ -2105,7 +2135,7 @@ static void schedule_fakelib_cleanup(void) {
 uint64_t sm_fakelib_game_next_cleanup_us(void) {
   pthread_mutex_lock(&g_fakelib_mutex);
   uint64_t next_us = g_fakelib_mount.cleanup_next_us;
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
   return next_us;
 }
 
@@ -2113,7 +2143,7 @@ void sm_fakelib_game_poll_cleanup(void) {
   pthread_mutex_lock(&g_fakelib_mutex);
   if (runtime_sleep_mode_active() || should_stop_requested()) {
     g_fakelib_mount.cleanup_next_us = 0;
-    pthread_mutex_unlock(&g_fakelib_mutex);
+    unlock_fakelib_session();
     return;
   }
   uint64_t now_us = monotonic_time_us();
@@ -2122,7 +2152,7 @@ void sm_fakelib_game_poll_cleanup(void) {
     if (!cleanup_fakelib_mount())
       schedule_fakelib_cleanup();
   }
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 static bool cleanup_ppr_backport_fakelib(const char *title_id,
@@ -2633,7 +2663,7 @@ bool sm_fakelib_game_on_sandbox_ready(const char *title_id) {
 
   pthread_mutex_lock(&g_fakelib_mutex);
   bool ready = mount_fakelib_for_game_locked(0, title_id, false);
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
   return ready;
 }
 
@@ -2643,7 +2673,7 @@ bool sm_fakelib_game_set_usb_suspended(bool suspended) {
   // Sleep may have ended while the lifecycle watcher waited for game exit.
   // Reject a stale phase before touching any aliases.
   if (runtime_sleep_mode_active() != suspended || should_stop_requested()) {
-    pthread_mutex_unlock(&g_fakelib_mutex);
+    unlock_fakelib_session();
     errno = EBUSY;
     return false;
   }
@@ -2687,7 +2717,7 @@ bool sm_fakelib_game_set_usb_suspended(bool suspended) {
     log_debug("  [FAKELIB] USB sandbox %s incomplete for %s: %s",
               suspended ? "suspend" : "resume", g_fakelib_mount.title_id,
               strerror(sync_errno));
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
   if (sync_errno != 0)
     errno = sync_errno;
   return sync_errno == 0;
@@ -2700,7 +2730,7 @@ void sm_fakelib_game_on_usb_mount_change(const char *source_path, bool mounted) 
   pthread_mutex_lock(&g_fakelib_mutex);
   if (!g_fakelib_mount.mounts_ready || runtime_sleep_mode_active() ||
       should_stop_requested()) {
-    pthread_mutex_unlock(&g_fakelib_mutex);
+    unlock_fakelib_session();
     return;
   }
 
@@ -2710,7 +2740,7 @@ void sm_fakelib_game_on_usb_mount_change(const char *source_path, bool mounted) 
     log_debug("  [FAKELIB] USB sandbox update failed for %s (%s): %s",
               g_fakelib_mount.title_id, source_path, strerror(errno));
   }
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 void sm_fakelib_game_refresh_storage(void) {
@@ -2722,7 +2752,7 @@ void sm_fakelib_game_refresh_storage(void) {
     log_debug("  [FAKELIB] sandbox storage refresh failed for %s: %s",
               g_fakelib_mount.title_id, strerror(errno));
   }
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 void sm_fakelib_game_on_launch_failed(const char *title_id) {
@@ -2735,7 +2765,7 @@ void sm_fakelib_game_on_launch_failed(const char *title_id) {
     if (!cleanup_fakelib_mount())
       schedule_fakelib_cleanup();
   }
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 void sm_fakelib_game_on_exec(pid_t pid, const char *title_id,
@@ -2745,13 +2775,13 @@ void sm_fakelib_game_on_exec(pid_t pid, const char *title_id,
 
   pthread_mutex_lock(&g_fakelib_mutex);
   (void)mount_fakelib_for_game_locked(pid, title_id, notify_user);
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 void sm_fakelib_game_on_exit(pid_t pid) {
   pthread_mutex_lock(&g_fakelib_mutex);
   if (!fakelib_session_active() || g_fakelib_mount.pid != pid) {
-    pthread_mutex_unlock(&g_fakelib_mutex);
+    unlock_fakelib_session();
     return;
   }
 
@@ -2760,7 +2790,7 @@ void sm_fakelib_game_on_exit(pid_t pid) {
             (unsigned)g_fakelib_mount.layer_count);
   if (!cleanup_fakelib_mount())
     schedule_fakelib_cleanup();
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 static char g_fakelib_kept_title_id[MAX_TITLE_ID];
@@ -2769,8 +2799,11 @@ void sm_fakelib_game_shutdown(const char *handoff_title_id) {
   pthread_mutex_lock(&g_fakelib_mutex);
   g_fakelib_kept_title_id[0] = '\0';
   pid_t pid = g_fakelib_mount.pid;
+  bool overlay = fakelib_session_kind_locked() == SM_SESSION_OVERLAY ||
+                 sm_pkg_backport_has_redirects();
   sm_layer_owner_facts_t facts = {
       .has_layers = fakelib_session_active(),
+      .overlay = overlay,
       .pid = pid,
       .pid_alive = pid > 0 && (kill(pid, 0) == 0 || errno != ESRCH),
       .handoff_pending = handoff_title_id &&
@@ -2791,23 +2824,32 @@ void sm_fakelib_game_shutdown(const char *handoff_title_id) {
                 layer->label ? layer->label : "?", g_fakelib_mount.title_id,
                 (long)pid, layer->source_path, layer->mount_path);
     }
-  } else if (!cleanup_fakelib_mount()) {
-    int cleanup_errno = errno != 0 ? errno : EIO;
-    for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
-      const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
-      log_debug("  [FAKELIB] shutdown retained %s layer of %s: %s -> %s (%s)",
-                layer->label ? layer->label : "?", g_fakelib_mount.title_id,
-                layer->source_path, layer->mount_path, strerror(cleanup_errno));
+  } else {
+    if (facts.has_layers && facts.pid_alive) {
+      // Alias-only: the pre-2e3e1a6 teardown, verified on hardware.
+      log_debug("  [FAKELIB] shutdown removes the directory aliases of live "
+                "game %s pid=%ld (no overlay layers)",
+                g_fakelib_mount.title_id, (long)pid);
+    }
+    if (!cleanup_fakelib_mount()) {
+      int cleanup_errno = errno != 0 ? errno : EIO;
+      for (size_t i = 0; i < g_fakelib_mount.layer_count; ++i) {
+        const fakelib_layer_t *layer = &g_fakelib_mount.layers[i];
+        log_debug("  [FAKELIB] shutdown retained %s layer of %s: %s -> %s (%s)",
+                  layer->label ? layer->label : "?", g_fakelib_mount.title_id,
+                  layer->source_path, layer->mount_path,
+                  strerror(cleanup_errno));
+      }
     }
   }
   g_fakelib_mount.cleanup_next_us = 0;
   g_fakelib_mount.cleanup_deadline_us = 0;
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
 }
 
 bool sm_fakelib_game_kept_title(char title_id[MAX_TITLE_ID]) {
   pthread_mutex_lock(&g_fakelib_mutex);
   (void)strlcpy(title_id, g_fakelib_kept_title_id, MAX_TITLE_ID);
-  pthread_mutex_unlock(&g_fakelib_mutex);
+  unlock_fakelib_session();
   return title_id[0] != '\0';
 }

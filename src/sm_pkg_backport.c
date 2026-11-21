@@ -1,6 +1,7 @@
 #include "sm_platform.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "sm_gameinfo.h"
 #include "sm_filesystem.h"
@@ -80,6 +81,21 @@ _Static_assert(PKG_BACKPORT_MAX_REDIRECTS * MAX_PATH <= UINT32_MAX,
 static pthread_mutex_t g_pkg_backport_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pkg_backport_session_t
     g_pkg_backport_sessions[PKG_BACKPORT_MAX_SESSIONS];
+// Published on every unlock: should_stop_requested() reads it while this
+// mutex may be held by its own caller.
+static atomic_uint g_pkg_backport_installed = 0;
+
+static void unlock_pkg_backport_sessions(void) {
+  unsigned installed = 0;
+  for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i)
+    installed += g_pkg_backport_sessions[i].installed ? 1u : 0u;
+  atomic_store(&g_pkg_backport_installed, installed);
+  pthread_mutex_unlock(&g_pkg_backport_mutex);
+}
+
+bool sm_pkg_backport_has_redirects(void) {
+  return atomic_load(&g_pkg_backport_installed) != 0;
+}
 
 bool sm_pkg_backport_source_is_in_use(const char *path) {
   if (!path || !path[0])
@@ -93,7 +109,7 @@ bool sm_pkg_backport_source_is_in_use(const char *path) {
       continue;
     strlcpy(sources[count++], session->root_source, MAX_PATH);
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
   for (size_t i = 0; i < count; ++i)
     if (paths_overlap(path, sources[i]))
       return true;
@@ -592,7 +608,7 @@ uint64_t sm_pkg_backport_next_cleanup_us(void) {
     if (due_us != 0 && (next_us == 0 || due_us < next_us))
       next_us = due_us;
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
   return next_us;
 }
 
@@ -611,7 +627,7 @@ void sm_pkg_backport_poll_cleanup(void) {
         schedule_pkg_cleanup(session);
     }
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }
 
 bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
@@ -637,7 +653,7 @@ bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
   pthread_mutex_lock(&g_pkg_backport_mutex);
   // The request can have waited behind suspend or shutdown cleanup.
   if (runtime_sleep_mode_active() || should_stop_requested()) {
-    pthread_mutex_unlock(&g_pkg_backport_mutex);
+    unlock_pkg_backport_sessions();
     errno = EBUSY;
     return false;
   }
@@ -645,11 +661,11 @@ bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
   pkg_backport_session_t *session = prepare_session_locked(
       title_id, source, app0_path, &namespace_id, &already_ready);
   if (!session) {
-    pthread_mutex_unlock(&g_pkg_backport_mutex);
+    unlock_pkg_backport_sessions();
     return false;
   }
   if (already_ready) {
-    pthread_mutex_unlock(&g_pkg_backport_mutex);
+    unlock_pkg_backport_sessions();
     return true;
   }
 
@@ -662,7 +678,7 @@ bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
       int namespace_errno = status > 0 ? ENOENT : (errno != 0 ? errno : EIO);
       (void)close(fd);
       reset_session_locked(session);
-      pthread_mutex_unlock(&g_pkg_backport_mutex);
+      unlock_pkg_backport_sessions();
       errno = namespace_errno;
       return status > 0;
     }
@@ -680,7 +696,7 @@ bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
       schedule_pkg_cleanup(session);
     else
       reset_session_locked(session);
-    pthread_mutex_unlock(&g_pkg_backport_mutex);
+    unlock_pkg_backport_sessions();
     log_debug("  [BKP][NSFS] file redirect failed: title=%s src=%s dst=%s "
               "error=%d (%s)",
               title_id, source, app0_path, redirect_errno,
@@ -694,14 +710,14 @@ bool sm_pkg_backport_on_sandbox_ready(const char *title_id) {
 
   if (session->redirect_count == 0) {
     reset_session_locked(session);
-    pthread_mutex_unlock(&g_pkg_backport_mutex);
+    unlock_pkg_backport_sessions();
     return true;
   }
 
   size_t redirect_count = session->redirect_count;
   session->installed = true;
   session->ready = true;
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 
   log_debug("  [BKP][NSFS] package file fallback active: title=%s src=%s "
             "dst=%s redirects=%zu",
@@ -720,7 +736,7 @@ void sm_pkg_backport_on_launch_failed(const char *title_id) {
         !cleanup_session_locked(session, "launch failed"))
       schedule_pkg_cleanup(session);
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }
 
 void sm_pkg_backport_on_exec(pid_t pid, const char *title_id) {
@@ -736,7 +752,7 @@ void sm_pkg_backport_on_exec(pid_t pid, const char *title_id) {
       session->cleanup_deadline_us = 0;
     }
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }
 
 void sm_pkg_backport_on_exit(pid_t pid) {
@@ -749,7 +765,7 @@ void sm_pkg_backport_on_exit(pid_t pid) {
         !cleanup_session_locked(session, "game exit"))
       schedule_pkg_cleanup(session);
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }
 
 void sm_pkg_backport_shutdown(const char *handoff_title_id) {
@@ -757,8 +773,10 @@ void sm_pkg_backport_shutdown(const char *handoff_title_id) {
   for (size_t i = 0; i < PKG_BACKPORT_MAX_SESSIONS; ++i) {
     pkg_backport_session_t *session = &g_pkg_backport_sessions[i];
     if (session->installed && !session->shutdown_kept) {
+      // NSFS redirects change app0 contents: always an overlay session.
       sm_layer_owner_facts_t facts = {
           .has_layers = true,
+          .overlay = true,
           .pid = session->pid,
           .pid_alive = session->pid > 0 &&
               (kill(session->pid, 0) == 0 || errno != ESRCH),
@@ -787,7 +805,7 @@ void sm_pkg_backport_shutdown(const char *handoff_title_id) {
     session->cleanup_next_us = 0;
     session->cleanup_deadline_us = 0;
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }
 
 void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
@@ -798,5 +816,5 @@ void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
     if (session->installed && session->shutdown_kept)
       (void)sm_title_list_add(titles, count, max, session->title_id);
   }
-  pthread_mutex_unlock(&g_pkg_backport_mutex);
+  unlock_pkg_backport_sessions();
 }

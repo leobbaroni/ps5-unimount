@@ -6,6 +6,7 @@
 #include <sys/types.h>
 
 #include "sm_limits.h"
+#include "sm_unimount_logic.h"
 
 // Return true when fakelib backport automation is enabled.
 // Sandbox directory mounting is always enabled for supported game titles.
@@ -42,10 +43,14 @@ void sm_fakelib_game_on_exit(pid_t pid);
 // A zero deadline means no automatic cleanup is scheduled.
 uint64_t sm_fakelib_game_next_cleanup_us(void);
 void sm_fakelib_game_poll_cleanup(void);
-// Unmount all tracked overlays during watcher shutdown, unless their game is
-// alive, still launching, or in a same-app handoff (handoff_title_id, NULL if
-// none): those layers are kept and logged.
+// Unmount all tracked layers during watcher shutdown. An overlay session
+// (unionfs, app0 cover, app0/kraken, or NSFS redirects) whose game is alive,
+// still launching, or in a same-app handoff (handoff_title_id, NULL if none)
+// is kept and logged; an alias-only session is always torn down.
 void sm_fakelib_game_shutdown(const char *handoff_title_id);
+// Kind of the current session's owned sandbox layers (lock-free; safe under
+// any module lock). NSFS backport redirects are reported separately.
+sm_session_kind_t sm_fakelib_game_session_kind(void);
 // After sm_fakelib_game_shutdown(): the title whose layers were kept.
 bool sm_fakelib_game_kept_title(char title_id[MAX_TITLE_ID]);
 

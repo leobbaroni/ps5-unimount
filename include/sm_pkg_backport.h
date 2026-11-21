@@ -30,6 +30,8 @@ void sm_pkg_backport_poll_cleanup(void);
 // live, launching or handing-off game (handoff_title_id, NULL if none) are
 // kept and logged, also on later calls.
 void sm_pkg_backport_shutdown(const char *handoff_title_id);
+// Any redirect installed (lock-free; safe under any module lock).
+bool sm_pkg_backport_has_redirects(void);
 // Add the titles whose redirects a shutdown kept.
 void sm_pkg_backport_add_kept_titles(char titles[][MAX_TITLE_ID],
                                      size_t *count, size_t max);

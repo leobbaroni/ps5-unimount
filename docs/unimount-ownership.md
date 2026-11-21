@@ -84,24 +84,55 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
 
 ## Stopping with a game running
 
-The sandbox layers UniMount adds to a game (fakelib overlay on `common/lib`,
-`/data` and storage aliases, fonts, and for Kraken titles the writable `app0`
-cover and the read-only `app0/kraken` package folder), its NSFS backport
-redirects and its `/system_ex/app/<TID>` stack are recorded only in the
-running instance. A stop therefore never pulls them from under a live game:
+The sandbox layers UniMount adds to a game, its NSFS backport redirects and
+its `/system_ex/app/<TID>` stack are recorded only in the running instance.
+Two kinds of game session are told apart (`sm_session_kind`):
 
-- A signal or the STOP file while the lifecycle watcher tracks a game defers
-  the stop. UniMount keeps working normally and shuts down as soon as that
-  game has exited and its on-exit cleanup has run.
-- A second request while deferred, the console shutting down, or a scanner
-  failure stops at once. Layers of a game that is still alive, still
-  launching in its sandbox, or in a same-app handoff are then kept, without
-  an unmount attempt; everything else is shut down as before.
-- Kept layers have no owner afterwards: a later instance does not adopt or
-  remove them (it stays passive while a managed game runs, see step 0). The
-  `/system_ex/app/<TID>` stack is released by the scanner's normal cleanup
-  once nothing uses it; sandbox layers stay until ShellCore or a reboot
-  removes the sandbox.
+- **Alias-only**: plain nullfs directory aliases at the sandbox root
+  (`/data`, `/mnt/usbN`, `/mnt/extN`, `/mnt/disc`, fonts). Typical for image
+  titles.
+- **Overlay**: any unionfs layer (fakelib/fakelib2 on `common/lib`), anything
+  mounted on or inside `app0` (the Kraken `app0` cover and `app0/kraken`), or
+  NSFS backport redirects. Every Kraken-path title is an overlay session.
+
+What a stop does (`sm_stop_decide`):
+
+| Request | Alias-only or no layers | Overlay |
+| --- | --- | --- |
+| First signal (SIGTERM etc.) | Stop now, normal teardown | Defer until the game has exited |
+| First STOP file | Defer until the game has exited | Defer until the game has exited |
+| Second request, console shutdown, scanner failure | Stop now, normal teardown | Stop now, keep the game's layers |
+| Any request, no active game | Stop now, normal teardown | Stop now, normal teardown |
+
+- The normal teardown of an alias-only session is the one UniMount always
+  did: a non-forced unmount of every alias that is not busy, under the live
+  game. On hardware an image title kept running after that, closing it
+  worked and the next start was clean.
+- A signal is not deferred for an alias-only session because it may be
+  followed by SIGKILL: PS5 Payload Manager's `process_kill` sends SIGTERM,
+  waits at most 1.5 s and then sends SIGKILL.
+- A deferred stop keeps UniMount working normally; it shuts down as soon as
+  the game has exited and its on-exit cleanup has run.
+- A kept overlay session is kept whole, without an unmount attempt, together
+  with its `/system_ex/app/<TID>` stack (image teardown is then skipped, as
+  for a busy stack).
+
+**A payload manager's kill during a game with overlay layers cannot be made
+safe.** UniMount defers on the SIGTERM, but the SIGKILL 1.5 s later ends it
+with the game's layers still mounted and no owner left. Both alternatives end
+the same way on hardware: tearing the overlay layers down under the live game
+(the behaviour before this rule) and leaving them in place (a deferral cut
+off by SIGKILL) were each followed, when the game was closed afterwards, by
+`sceSystemServiceKillApp` blocking about 15 s, returning `0x80020003`, and
+the console going down. Deferring at least keeps the game itself intact
+until then. To stop UniMount while such a game runs, close the game first,
+or use the STOP file (never followed by a kill) and then close the game.
+
+Kept or orphaned layers have no owner afterwards: a later instance does not
+adopt or remove them (it stays passive while a managed game runs, see step
+0). The `/system_ex/app/<TID>` stack is released by the scanner's normal
+cleanup once nothing uses it; sandbox layers stay until ShellCore or a
+reboot removes the sandbox.
 
 Log lines (in `debug.log`; after the next start in `debug.log.1`):
 
@@ -113,11 +144,14 @@ Log lines (in `debug.log`; after the next start in `debug.log.1`):
 | `[RESTART] previous instance pid=<pid> deferred its stop for a running game; waiting for the game to close` | Step 1 timed out while a big app runs. |
 | `[RESTART] previous instance pid=<pid> did not stop within 60 s; not starting alongside it` | Step 1 gave up; this copy exits. |
 | `[SHUTDOWN] stop request <n> received (signal\|STOP file ...)` | Each new stop request. |
-| `[SHUTDOWN] deferred: <TID> is running` | First request with an active game. |
+| `[SHUTDOWN] deferred: <TID> is running (signal, overlay layers; a SIGKILL that follows leaves them orphaned)` | First signal with an overlay session. |
+| `[SHUTDOWN] deferred: <TID> is running (STOP file, <kind>)` | First STOP file with an active game; `<kind>` is `overlay layers`, `only directory aliases` or `no layers`. |
 | `[SHUTDOWN] game closed; continuing the deferred shutdown` | The deferred stop proceeds. |
-| `[SHUTDOWN] stopping now while <TID> is running (<reason>); its layers are kept` | Forced or immediate stop with a live game. |
+| `[SHUTDOWN] stopping now while <TID> is running (<reason>); its overlay layers are kept` | Second request or immediate stop with an overlay session. |
+| `[SHUTDOWN] stopping now while <TID> is running (<reason>): <kind> in its sandbox, normal teardown` | Stop with a live alias-only (or layer-less) session: first signal, second request or immediate stop. |
 | `  [GAME] stopping with a live game: <TID> pid=<pid>` | The lifecycle watcher stopped while the game process was alive. |
 | `  [FAKELIB] shutdown kept <label> layer of live game <TID> pid=<pid>: <source> -> <target>` | One per kept sandbox layer. |
+| `  [FAKELIB] shutdown removes the directory aliases of live game <TID> pid=<pid> (no overlay layers)` | Alias-only teardown under a live game. |
 | `  [FAKELIB] shutdown retained <label> layer of <TID>: <source> -> <target> (<error>)` | Teardown of a stopped game's layer failed. |
 | `  [BKP][NSFS] shutdown kept redirects of live game: title=<TID> pid=<pid> count=<n>` | Backport redirects kept. |
 | `  [LINK] shutdown kept /system_ex/app/<TID> of live game` | Title stack kept; image teardown is skipped. |

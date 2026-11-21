@@ -332,17 +332,49 @@ sm_restart_timeout_t sm_restart_timeout_decide(bool app_running) {
   return app_running ? SM_RESTART_WAIT_FOR_APP : SM_RESTART_GIVE_UP;
 }
 
-sm_stop_decision_t sm_stop_decide(unsigned requests, bool immediate,
-                                  bool game_active) {
-  if (immediate || requests >= 2u)
-    return SM_STOP_NOW;
-  if (requests == 0)
+sm_layer_kind_t sm_sandbox_layer_kind(bool unionfs, const char *mount_path,
+                                      const char *app0_path) {
+  if (unionfs)
+    return SM_LAYER_OVERLAY;
+  if (mount_path && app0_path && app0_path[0] != '\0') {
+    size_t length = strlen(app0_path);
+    if (strncmp(mount_path, app0_path, length) == 0 &&
+        (mount_path[length] == '\0' || mount_path[length] == '/'))
+      return SM_LAYER_OVERLAY;
+  }
+  return SM_LAYER_ALIAS;
+}
+
+sm_session_kind_t sm_session_kind(const sm_layer_kind_t *layers, size_t count,
+                                  bool redirects) {
+  if (redirects)
+    return SM_SESSION_OVERLAY;
+  sm_session_kind_t kind = SM_SESSION_NONE;
+  for (size_t i = 0; layers && i < count; ++i) {
+    if (layers[i] == SM_LAYER_OVERLAY)
+      return SM_SESSION_OVERLAY;
+    kind = SM_SESSION_ALIASES;
+  }
+  return kind;
+}
+
+sm_stop_decision_t sm_stop_decide(const sm_stop_facts_t *facts) {
+  if (!facts || (facts->requests == 0 && !facts->immediate))
     return SM_STOP_NONE;
-  return game_active ? SM_STOP_DEFER : SM_STOP_NOW;
+  if (!facts->game_active)
+    return SM_STOP_NOW;
+  bool overlay = facts->session == SM_SESSION_OVERLAY;
+  if (facts->immediate || facts->requests >= 2u)
+    return overlay ? SM_STOP_NOW_KEEP : SM_STOP_NOW;
+  // A signal may be followed by SIGKILL: only an overlay session, whose
+  // teardown and abandonment both crash the console at game exit, waits.
+  if (facts->by_signal && !overlay)
+    return SM_STOP_NOW;
+  return SM_STOP_DEFER;
 }
 
 bool sm_shutdown_keeps_game_layers(const sm_layer_owner_facts_t *facts) {
-  if (!facts || !facts->has_layers)
+  if (!facts || !facts->has_layers || !facts->overlay)
     return false;
   if (facts->pid > 0 && facts->pid_alive)
     return true;
