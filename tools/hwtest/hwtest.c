@@ -7,6 +7,7 @@
  *   status            -> "ok bigapp=0x%08x"   (0xffffffff when none is running)
  *   launch <TITLEID>  -> "ok app_id=0x%08x" | "err busy bigapp=0x..." | "err rc=0x%08x"
  *   kill              -> "ok" | "err rc=0x%08x" | "err none"
+ *   browse http://... -> opens the console's web browser at that URL
  *   quit              -> "ok bye" and the payload exits
  *
  * Launch/kill calls follow ps5-payload-dev/websrv (sys_launch_title), GPL-3.0.
@@ -39,6 +40,7 @@ int sceUserServiceGetForegroundUser(uint32_t *user_id);
 int sceSystemServiceGetAppIdOfRunningBigApp(void);
 int sceSystemServiceKillApp(int app_id, int how, int reason, int core_dump);
 int sceSystemServiceLaunchApp(const char *title_id, char **argv, app_launch_ctx_t *ctx);
+int sceSystemServiceLaunchWebBrowser(const char *uri);
 
 static int valid_title_id(const char *s) {
   if (strlen(s) != 9)
@@ -96,6 +98,9 @@ static int handle(int fd) {
       int rc = sceSystemServiceKillApp(running, -1, 0, 0);
       reply(fd, rc ? "err rc=0x%08x\n" : "ok\n", (uint32_t)rc);
     }
+  } else if (strncmp(line, "browse http://", 14) == 0) {
+    int rc = sceSystemServiceLaunchWebBrowser(line + 7);
+    reply(fd, rc ? "err rc=0x%08x\n" : "ok\n", (uint32_t)rc);
   } else if (strcmp(line, "quit") == 0) {
     reply(fd, "ok bye\n", 0);
     return 1;

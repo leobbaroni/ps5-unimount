@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UniMount browser probe</title>
+<style>
+  body { margin: 0; padding: 40px; background: #0b0d10; color: #fff; font: 28px/1.4 sans-serif; }
+  h1 { font-size: 44px; margin: 0 0 16px; }
+  pre { font: 20px/1.4 monospace; white-space: pre-wrap; }
+  #gaptest { display: flex; gap: 20px; width: 0; }
+  #gaptest div { width: 10px; height: 10px; }
+</style>
+</head>
+<body>
+<h1>UniMount browser probe</h1>
+<p>Press each controller button once: D-pad, cross, circle, square, triangle, L1, R1, Options. The page reports what it receives.</p>
+<pre id="out">collecting...</pre>
+<div id="gaptest"><div></div><div></div></div>
+<script>
+/* Test-only page: reports browser capabilities and input events back to the
+   server it was loaded from (GET /report?...). Written in old-style JS on
+   purpose so it runs on an old engine. */
+(function () {
+  var out = document.getElementById('out');
+  var lines = [];
+  function send(kind, data) {
+    try {
+      var img = new Image();
+      img.src = '/report?kind=' + encodeURIComponent(kind) + '&d=' + encodeURIComponent(data) + '&t=' + Date.now();
+    } catch (e) {}
+  }
+  function note(kind, data) {
+    lines.push(kind + ': ' + data);
+    if (lines.length > 40) lines.shift();
+    out.textContent = lines.join('\n');
+    send(kind, data);
+  }
+  function sup(decl) {
+    try { return !!(window.CSS && CSS.supports && CSS.supports(decl)); } catch (e) { return 'err'; }
+  }
+  function js(code) {
+    try { new Function(code); return true; } catch (e) { return false; }
+  }
+  var gap = document.getElementById('gaptest');
+  var flexGap = gap.scrollWidth >= 40;
+  var caps = {
+    ua: navigator.userAgent,
+    viewport: window.innerWidth + 'x' + window.innerHeight,
+    screen: screen.width + 'x' + screen.height,
+    dpr: window.devicePixelRatio,
+    lang: navigator.language,
+    cssSupportsApi: !!(window.CSS && CSS.supports),
+    grid: sup('display: grid'),
+    flexGap: flexGap,
+    gridGap: sup('gap: 1px'),
+    aspectRatio: sup('aspect-ratio: 16 / 9'),
+    inset: sup('inset: 0'),
+    objectFit: sup('object-fit: cover'),
+    backdropFilter: sup('backdrop-filter: blur(2px)') || sup('-webkit-backdrop-filter: blur(2px)'),
+    cssMinMax: sup('width: min(10px, 5vw)'),
+    cssClamp: sup('width: clamp(1px, 2vw, 3px)'),
+    cssVars: sup('color: var(--x)'),
+    focusVisible: sup('selector(:focus-visible)'),
+    has: sup('selector(:has(a))'),
+    sticky: sup('position: sticky'),
+    scrollSnap: sup('scroll-snap-type: x mandatory'),
+    optionalChaining: js('var a = {}; return a?.b;'),
+    nullish: js('var a = null; return a ?? 1;'),
+    asyncAwait: js('return (async function(){ await 1; })'),
+    arrow: js('return () => 1;'),
+    letConst: js('let a = 1; const b = 2; return a + b;'),
+    templateLiteral: js('return `a${1}`;'),
+    fetch: typeof window.fetch === 'function',
+    promise: typeof window.Promise === 'function',
+    abortController: typeof window.AbortController === 'function',
+    intersectionObserver: typeof window.IntersectionObserver === 'function',
+    resizeObserver: typeof window.ResizeObserver === 'function',
+    requestAnimationFrame: typeof window.requestAnimationFrame === 'function',
+    gamepadApi: typeof navigator.getGamepads === 'function',
+    pointerEvents: typeof window.PointerEvent === 'function',
+    touch: 'ontouchstart' in window,
+    localStorage: (function () { try { localStorage.setItem('p', '1'); localStorage.removeItem('p'); return true; } catch (e) { return false; } })(),
+    reducedMotionQuery: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').media !== 'not all'),
+    svgUse: !!document.createElementNS && !!document.createElementNS('http://www.w3.org/2000/svg', 'use').href
+  };
+  var parts = [];
+  for (var k in caps) { if (caps.hasOwnProperty(k)) parts.push(k + '=' + caps[k]); }
+  note('caps', parts.join(' | '));
+
+  document.addEventListener('keydown', function (e) {
+    note('keydown', 'key=' + e.key + ' code=' + e.code + ' keyCode=' + e.keyCode + ' which=' + e.which);
+  }, true);
+  document.addEventListener('mousemove', (function () {
+    var seen = false;
+    return function (e) { if (!seen) { seen = true; note('mouse', 'mousemove seen at ' + e.clientX + ',' + e.clientY); } };
+  })(), true);
+  document.addEventListener('click', function (e) { note('click', e.clientX + ',' + e.clientY + ' button=' + e.button); }, true);
+  window.addEventListener('gamepadconnected', function (e) {
+    note('gamepadconnected', e.gamepad.id + ' mapping=' + e.gamepad.mapping + ' buttons=' + e.gamepad.buttons.length + ' axes=' + e.gamepad.axes.length);
+  });
+  var lastButtons = {};
+  function poll() {
+    if (typeof navigator.getGamepads === 'function') {
+      var pads = navigator.getGamepads();
+      for (var i = 0; pads && i < pads.length; i++) {
+        var p = pads[i];
+        if (!p) continue;
+        for (var b = 0; b < p.buttons.length; b++) {
+          var pressed = !!(p.buttons[b] && p.buttons[b].pressed);
+          var id = i + ':' + b;
+          if (pressed && !lastButtons[id]) note('padbutton', 'pad=' + i + ' button=' + b + ' id=' + p.id);
+          lastButtons[id] = pressed;
+        }
+      }
+    }
+    setTimeout(poll, 100);
+  }
+  poll();
+  setTimeout(function () {
+    var n = 0;
+    try { var pads = navigator.getGamepads ? navigator.getGamepads() : []; for (var i = 0; pads && i < pads.length; i++) if (pads[i]) n++; } catch (e) {}
+    note('pads-after-5s', String(n));
+  }, 5000);
+})();
+</script>
+</body>
+</html>
