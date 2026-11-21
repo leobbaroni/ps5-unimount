@@ -34,7 +34,8 @@ where games are rows of badges.
 
 OWN-WORLD: Full-bleed game art under a left and bottom scrim. White is the only interface colour;
 one red marks failure. Rectangles with 6px corners, 1px white borders, solid white for focus. One
-neo-grotesque system sans in two weights with tabular numerals. A five-segment stage tracker.
+neo-grotesque system sans in two weights with tabular numerals. A five-stage tracker drawn as marks
+and words, not boxes (owner's steer, 2026-11-21: "too many boxes").
 
 STORY: The owner reads the focused game's truth from found to running at a glance, moves along the
 shelf to any other game, and acts without leaving the screen. A failed launch shows the console's

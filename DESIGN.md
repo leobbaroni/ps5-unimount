@@ -146,15 +146,16 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
     width: "13rem"
-  stage-segment:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.on-ink}"
-    rounded: "{rounded.mark}"
-    width: "6.25rem"
-    height: "1.5rem"
-  stage-segment-failed:
+  stage-mark:
+    textColor: "{colors.ink}"
+    width: "1.25rem"
+    height: "1.25rem"
+  stage-mark-failed:
     backgroundColor: "{colors.failure-red}"
     textColor: "{colors.ink}"
+    rounded: "{rounded.meter}"
+    width: "1.25rem"
+    height: "1.25rem"
   failure-tag:
     backgroundColor: "{colors.failure-red}"
     textColor: "{colors.ink}"
@@ -183,7 +184,7 @@ The technical frame is part of the design, not a footnote to it. The interface i
 **Key Characteristics:**
 - Full-bleed game art under a scrim; interface drawn in white on top of it.
 - One solid white rectangle per screen for the primary action; everything else is outlined.
-- A five-segment stage tracker that states launch truth with shape and glyph, not hue.
+- A five-stage tracker of marks and words that states launch truth with glyph and word, not hue.
 - Platform system sans in two weights, tabular numerals for facts and codes.
 - Sized in rem against a root that scales with the viewport, so the TV layout holds at 1540×700, 1280×720 and 1920×1080.
 - One 240ms motion, used for focus and the art cross-fade, and nothing else.
@@ -193,10 +194,10 @@ The technical frame is part of the design, not a footnote to it. The interface i
 Monochrome over photography: a near-black ground, white at a few opacities, and one red.
 
 ### Primary
-- **Interface White** (`ink`): all text at full emphasis, the primary button fill, done stage segments, focus outlines, the selected-tab underline, the checked switch, meter fill. Text on a white fill is pure black (`on-ink`).
+- **Interface White** (`ink`): all text at full emphasis, the primary button fill, stage marks and the labels of done, in-progress and failed stages, focus outlines, the selected-tab underline, the checked switch, meter fill. Text on a white fill is pure black (`on-ink`).
 
 ### Secondary
-- **Failure Red** (`failure-red`): a failed stage segment, the console's error code inline in the state sentence, the error tag on a shelf cover, the error toast's border and marker. It always carries white text or a cross glyph. In the build it also fills the final "delete permanently" confirmation button and outlines the box that names what will be deleted; that is its only non-failure use.
+- **Failure Red** (`failure-red`): the filled square behind a failed stage's cross, the console's error code inline in the state sentence, the error tag on a shelf cover, the error toast's border and marker. It always carries white text or a cross glyph. In the build it also fills the final "delete permanently" confirmation button and outlines the box that names what will be deleted; that is its only non-failure use.
 
 ### Neutral
 - **Screen Ground** (`ground`): the page behind the art, and the solid left side of the scrim when a game only has portrait cover art.
@@ -213,7 +214,7 @@ Monochrome over photography: a near-black ground, white at a few opacities, and 
 
 **The Failure Red Rule.** Red means something failed. It appears only where the console reported a failure, plus the single irreversible-delete confirmation. It is never a brand accent, a hover state or a decoration.
 
-**The Never Colour Alone Rule.** Every state red or white carries is also carried by shape and words: a check, a play triangle or a cross inside the segment, a dashed outline for pending, a bold status word with a cross on the cover.
+**The Never Colour Alone Rule.** Every state red or white carries is also carried by shape and words: a check, a play triangle, a progress glyph, a dash or a cross beside each stage's word, a dashed outline for pending meters, a bold status word with a cross on the cover.
 
 ## Typography
 
@@ -232,7 +233,7 @@ All sizes are rem. The root is `max(16px, min(1.25vw, 2.222vh))`: 16px at the pr
 - **Subtitle** (700, 1.125rem, 1.3): block headings inside a page, list-row titles; shelf-cover names at 1.0625rem.
 - **Body large** (400, 1.25rem, 1.3): the state sentence (two lines at most) and the labels of the hero action row.
 - **Body** (400, 1.125rem, 1.3): buttons, tabs, inputs, lead paragraphs.
-- **Label** (400, 1rem, 1.4): stage labels, status line, metadata, hints, legend, small buttons. Stage notes use it at line-height 1.2.
+- **Label** (400, 1rem, 1.4): stage labels, status line, metadata, hints, legend, small buttons. Stage notes use it too, on the same line as the label.
 - **Tag** (700, 0.9375rem, tabular): error codes on covers; inline tags drop to 0.8125rem.
 - **Path** (monospace 400, 0.9375rem): filesystem paths, job routes; the log view is 0.875rem at 1.45.
 
@@ -268,7 +269,7 @@ The one `box-shadow` in the build is a 2px spread ring with no offset and no blu
 
 ## Shapes
 
-Rectangles with small corners. Controls, covers, sheets, toasts and the log view take 6px. Marks inside or beside controls take 4px: stage segments, tags, key caps, switch tracks, thumbnails. Meters take 3px and the switch thumb 2px. Borders are 1px white; 2px is used only to mark a current choice (the selected language, a pressed segment option, the current storage root) and for stage segments. Dashed borders mean pending or not applicable.
+Rectangles with small corners. Controls, covers, sheets, toasts and the log view take 6px. Marks inside or beside controls take 4px: tags, key caps, switch tracks, thumbnails. Meters and the failed stage mark take 3px and the switch thumb 2px. Borders are 1px white; 2px is used only to mark a current choice (the selected language, a pressed segment option, the current storage root). Dashed borders mean pending or not applicable.
 
 Even the toggle is square: a rectangular track with a square thumb that jumps sides. Selection indicators are small filled squares, not dots.
 
@@ -292,7 +293,7 @@ Controls are plain and confident: an outline, a label, an optional 1.25em stroke
 - **Sub-navigation:** full-width left-aligned buttons with a soft outline; the current one takes a full white outline and 700.
 
 ### Stage tracker (signature)
-Five segments in a row, each 6.25rem by 1.5rem with a 2px white outline, a label beneath (one line, ellipsis) and an optional note that wraps under it. Done is solid white with a black check. Pending is a dashed outline with a white glyph. Deferred ("on launch") is outlined with a play triangle. Not reached is an empty outline in Tertiary White. Failed is solid red with a white cross. Not observed (the last launch's observation was interrupted, its outcome is one the page does not know, or an in-progress record went stale) is the same hollow outline with the note "Not observed": never red, never a check. The tracker is re-stamped (a 240ms fade up from 35 percent) whenever the focused game changes. The same segments, 3rem wide, lead each row of the per-game diagnostics list.
+Symbols and text only, no boxes. Each of the five stages is a mark and a word on one line, about 1.75rem tall: a 1.25rem stroked glyph, the label at Label size, then an optional note after a middle-dot separator in Tertiary White. Stages sit in a wrapping row 1.5rem apart (mirrored for right-to-left). Done is a white check. Deferred ("on launch") is a white play triangle. In progress is a white progress glyph. Not reached, not needed and not observed are a dash in Tertiary White. Failed is the only filled mark: a 1.25rem Failure Red square with 3px corners carrying a white cross. Not observed (the last launch's observation was interrupted, its outcome is one the page does not know, or an in-progress record went stale) is the dim dash with the note "Not observed": never red, never a check. Labels of done, in-progress and failed stages are full white, the rest Secondary White; notes are full white. The tracker is re-stamped (a 240ms fade up from 35 percent) whenever the focused game changes. In the reflow layout stages wrap onto several lines 1rem apart, with label and note at 0.875rem. The same marks lead each 2.5rem row of the launch-record stage list in the diagnostics dialog.
 
 ### Cover shelf (signature)
 - **Cover:** 15rem wide, 16:9 art above a 4.25rem caption on Solid Fill with a 700 name (two lines maximum) and a one-line status word. Soft outline at rest. Art that does not fit 16:9 is shown whole over a darkened, enlarged copy of itself.
@@ -331,7 +332,7 @@ A single line at the bottom of the TV layout pairing a line icon with a word for
 - **Do** keep everything inline: system fonts, inline SVG line symbols, data-URI textures. The file stays self-contained and under 700 KB.
 - **Do** mirror every horizontal offset for right-to-left languages, and leave room for long translations (labels do not wrap; containers truncate with an ellipsis).
 - **Do** make reduced motion instant: no cross-fade, no scale transition, no re-stamp.
-- **Do** show a launch whose end was not observed, or whose outcome is unknown, as "Not observed": a hollow segment and a neutral word, never red and never success.
+- **Do** show a launch whose end was not observed, or whose outcome is unknown, as "Not observed": a dim dash and a neutral word, never red and never success.
 
 ### Don't:
 - **Don't** introduce a second interface colour, a tinted surface, or red for anything other than failure and the final delete confirmation.

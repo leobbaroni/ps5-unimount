@@ -38,7 +38,7 @@
       "subtitle": { "displayName": "Subtitle", "purpose": "Block headings, list-row titles, shelf-cover names (1.0625rem)." },
       "body-lg": { "displayName": "Body large", "purpose": "State sentence (two lines maximum) and hero action labels." },
       "body": { "displayName": "Body", "purpose": "Buttons, tabs, inputs, lead paragraphs." },
-      "label": { "displayName": "Label", "purpose": "Stage labels, status line, metadata, hints, legend, small buttons; stage notes at line-height 1.2, wrapping. The couch-distance floor." },
+      "label": { "displayName": "Label", "purpose": "Stage labels, status line, metadata, hints, legend, small buttons; stage notes on the same line as the label, after a middle dot. The couch-distance floor." },
       "tag": { "displayName": "Tag", "purpose": "Error codes on covers with tabular numerals; inline tags at 0.8125rem." },
       "path": { "displayName": "Path", "purpose": "Platform monospace for filesystem paths, job routes and the log view only." }
     },
@@ -111,10 +111,10 @@
     {
       "name": "Stage Tracker",
       "kind": "custom",
-      "refersTo": "stage-segment",
-      "description": "Five segments stating how far a game got: done, deferred, pending, not reached, failed, and not observed (hollow, with a 'Not observed' note; never red, never a check). State is carried by fill, outline style, glyph and note together.",
-      "html": "<ol class=\"ds-tracker\"><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Found</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Prepared</span></li><li class=\"ds-stage ds-lazy\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M8 6l10 6-10 6z\"/></svg></span><span class=\"ds-stage-label\">Mounted</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Registered</span></li><li class=\"ds-stage ds-none\"><span class=\"ds-seg\"></span><span class=\"ds-stage-label\">Running</span><span class=\"ds-stage-note\">Not observed</span></li></ol>",
-      "css": ".ds-tracker { display: flex; margin: 0; padding: 0; list-style: none; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-stage { width: 100px; margin-right: 6px; text-align: center; } .ds-seg { display: flex; align-items: center; justify-content: center; height: 24px; border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.45); color: #000; } .ds-seg svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; } .ds-done .ds-seg { background: #fff; } .ds-lazy .ds-seg { color: #fff; } .ds-failed .ds-seg { background: #c62828; border-color: #c62828; color: #fff; } .ds-stage-label { display: block; margin-top: 6px; color: rgba(255,255,255,.84); white-space: nowrap; } .ds-done .ds-stage-label, .ds-failed .ds-stage-label { color: #fff; } .ds-none .ds-seg { border-color: rgba(255,255,255,.7); } .ds-stage-note { display: block; color: #fff; line-height: 1.2; overflow-wrap: anywhere; }"
+      "refersTo": "stage-mark",
+      "description": "Five stages stating how far a game got, each a mark and a word on one line with no box: done (white check), deferred 'on launch' (play triangle), in progress (progress glyph), not reached, not needed and not observed (dim dash, with a 'Not observed' note where it applies; never red, never a check), and failed, the only filled mark (a red square with a white cross). State is carried by glyph, label and note together. The same marks lead the launch-record stage list in the diagnostics dialog.",
+      "html": "<ol class=\"ds-tracker\"><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Found</span></li><li class=\"ds-stage ds-done\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-10\"/></svg></span><span class=\"ds-stage-label\">Prepared</span></li><li class=\"ds-stage ds-lazy\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M8 6l10 6-10 6z\"/></svg></span><span class=\"ds-stage-label\">Mounted</span></li><li class=\"ds-stage ds-failed\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></span><span class=\"ds-stage-label\">Registered</span></li><li class=\"ds-stage ds-none\"><span class=\"ds-seg\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 12h12\"/></svg></span><span class=\"ds-stage-label\">Running</span><span class=\"ds-stage-note\">Not observed</span></li></ol>",
+      "css": ".ds-tracker { display: flex; flex-wrap: wrap; margin: 0; padding: 0; list-style: none; font: 400 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; } .ds-stage { display: flex; align-items: center; min-height: 28px; margin-right: 24px; white-space: nowrap; } .ds-seg { display: flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 20px; margin-right: 6px; border-radius: 3px; color: #fff; } .ds-seg svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; } .ds-failed .ds-seg { background: #c62828; } .ds-failed .ds-seg svg { width: 16px; height: 16px; stroke-width: 3; } .ds-none .ds-seg { color: rgba(255,255,255,.7); } .ds-stage-label { color: rgba(255,255,255,.84); } .ds-done .ds-stage-label, .ds-failed .ds-stage-label { color: #fff; } .ds-stage-note { color: #fff; } .ds-stage-note::before { content: \"\\00B7\"; margin: 0 6px; color: rgba(255,255,255,.7); }"
     },
     {
       "name": "Shelf Cover",
@@ -154,7 +154,7 @@
     "keyCharacteristics": [
       "Full-bleed game art under a scrim; interface drawn in white on top of it.",
       "One solid white rectangle per screen for the primary action; everything else is outlined.",
-      "A five-segment stage tracker that states launch truth with shape and glyph, not hue.",
+      "A five-stage tracker of marks and words that states launch truth with glyph and word, not hue.",
       "Platform system sans in two weights, tabular numerals for facts and codes.",
       "Sized in rem against a root that scales with the viewport, so the TV layout holds at 1540×700, 1280×720 and 1920×1080.",
       "One 240ms motion, used for focus and the art cross-fade, and nothing else."
@@ -162,7 +162,7 @@
     "rules": [
       { "name": "The One White Rule", "body": "White is the only interface colour. Emphasis comes from opacity (100, 84, 70 percent), weight and solid-versus-outline, never from a second hue.", "section": "colors" },
       { "name": "The Failure Red Rule", "body": "Red means something failed. It appears only where the console reported a failure, plus the single irreversible-delete confirmation. It is never a brand accent, a hover state or a decoration.", "section": "colors" },
-      { "name": "The Never Colour Alone Rule", "body": "Every state red or white carries is also carried by shape and words: a check, a play triangle or a cross inside the segment, a dashed outline for pending, a bold status word with a cross on the cover.", "section": "colors" },
+      { "name": "The Never Colour Alone Rule", "body": "Every state red or white carries is also carried by shape and words: a check, a play triangle, a progress glyph, a dash or a cross beside each stage's word, a dashed outline for pending meters, a bold status word with a cross on the cover.", "section": "colors" },
       { "name": "The Two Weights Rule", "body": "Only 400 and 700. No light, medium or black, no italics, no uppercase transforms, no letter-spaced labels. Negative tracking is reserved for the display title and wordmark.", "section": "typography" },
       { "name": "The Couch Floor Rule", "body": "Anything the owner must read from the couch is 1rem or larger. Sizes below that are limited to tags, key caps and the log.", "section": "typography" },
       { "name": "The Tabular Rule", "body": "Sizes, counts, timestamps, error codes and progress figures use tabular numerals so they do not jitter as they update.", "section": "typography" },
@@ -179,7 +179,7 @@
       "Do keep everything inline: system fonts, inline SVG line symbols, data-URI textures. The file stays self-contained and under 700 KB.",
       "Do mirror every horizontal offset for right-to-left languages, and leave room for long translations (labels do not wrap; containers truncate with an ellipsis).",
       "Do make reduced motion instant: no cross-fade, no scale transition, no re-stamp.",
-      "Do show a launch whose end was not observed, or whose outcome is unknown, as \"Not observed\": a hollow segment and a neutral word, never red and never success."
+      "Do show a launch whose end was not observed, or whose outcome is unknown, as \"Not observed\": a dim dash and a neutral word, never red and never success."
     ],
     "donts": [
       "Don't introduce a second interface colour, a tinted surface, or red for anything other than failure and the final delete confirmation.",
