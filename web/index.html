@@ -179,7 +179,7 @@
     .shelf-tools { display: flex; align-items: center; }
     .shelf-tools > * { margin-left: .75rem; }
     [dir="rtl"] .shelf-tools > * { margin-left: 0; margin-right: .75rem; }
-    .shelf-tools input { width: 15rem; min-height: 2.5rem; font-size: 1rem; }
+    .shelf-tools input { width: 13rem; min-height: 2.5rem; font-size: 1rem; }
     .shelf-tools select { min-height: 2.5rem; font-size: 1rem; }
     .shelf-tools .btn { min-height: 2.5rem; font-size: 1rem; }
     .shelf { display: flex; overflow-x: auto; overflow-y: hidden; margin: 0 calc(-1 * var(--gutter)); padding: 1rem var(--gutter) .5rem; scroll-behavior: auto; scrollbar-width: none; }
@@ -499,6 +499,15 @@
             <h2 id="shelfHeading" class="tabular"></h2>
             <div class="shelf-tools">
               <input type="search" id="filter" autocomplete="off" spellcheck="false" placeholder="Filter games" data-i18n-placeholder="filterPlaceholder" aria-label="Filter games" data-i18n-aria-label="filterPlaceholder">
+              <select id="typeFilter" aria-label="Library filter" data-i18n-aria-label="libraryFilter">
+                <option value="all" data-i18n="allGames">All games</option>
+                <option value="folder" data-i18n="folders">Folders</option>
+                <option value="image" data-i18n="images">Images</option>
+                <option value="pkg">PKG</option>
+                <option value="ps4">PS4</option>
+                <option value="ps5">PS5</option>
+                <option value="mounted" data-i18n="mounted">Mounted</option>
+              </select>
               <select id="sort" aria-label="Sort" data-i18n-aria-label="sortLabel">
                 <option value="recent" data-i18n="sortRecent">Recently played</option>
                 <option value="name" data-i18n="sortName">Name</option>
@@ -2975,7 +2984,7 @@
         packages: null, packageQueue: null, packageQueueLoading: false, packageRequest: 0,
         browserStream: null, browserFiles: [], browserBatchRunning: false, pathPicker: null,
         smbConnections: [], smbBusy: false, smbRequest: 0, manual: [],
-        libraryTimer: 0, sort: "recent", filter: ""
+        libraryTimer: 0, sort: "recent", filter: "", type: "all"
       };
       const navigation = {
         view: "library", dialogs: [], input: "", padSeen: false, padButtonsSeen: false,
@@ -3613,8 +3622,22 @@
 
       function visibleGames() {
         const query = state.filter.trim().toLocaleLowerCase(currentLanguage);
-        return sortedGames().filter(game => !query || [game.title_name, game.title_id, game.content_id, game.path]
+        const type = state.type;
+        return sortedGames().filter(game => typeMatches(game, type)).filter(game => !query || [game.title_name, game.title_id, game.content_id, game.path]
           .some(value => String(value || "").toLocaleLowerCase(currentLanguage).includes(query)));
+      }
+
+      function typeMatches(game, type) {
+        return type === "all" || (type === "folder" && game.source_type === "folder") || (type === "image" && game.image_backed) ||
+          (type === "pkg" && game.source_type === "pkg") || (type === "mounted" && game.mounted) || game.platform === type;
+      }
+
+      function renderTypeCounts() {
+        // Option labels carry the per-type counts the old summary row showed.
+        Array.from($("typeFilter").options).forEach(option => {
+          const label = option.dataset.i18n ? t(option.dataset.i18n) : option.value.toUpperCase();
+          option.textContent = `${label} · ${state.games.filter(game => typeMatches(game, option.value)).length}`;
+        });
       }
 
       function cardThumb(game, thumb) {
@@ -3711,7 +3734,8 @@
           }
         }
         const total = state.games.length;
-        $("shelfHeading").textContent = state.filter.trim()
+        renderTypeCounts();
+        $("shelfHeading").textContent = state.filter.trim() || state.type !== "all"
           ? t("matchesCount", { shown: games.length, total })
           : `${t("allGames")} · ${total}`;
         updateCardFocusability();
@@ -6884,6 +6908,12 @@
       });
       $("filter").addEventListener("input", () => {
         state.filter = $("filter").value;
+        renderShelf();
+        const first = visibleGames()[0];
+        if (first && !visibleGames().some(game => game.title_id === state.selectedId)) selectGame(first.title_id);
+      });
+      $("typeFilter").addEventListener("change", () => {
+        state.type = $("typeFilter").value;
         renderShelf();
         const first = visibleGames()[0];
         if (first && !visibleGames().some(game => game.title_id === state.selectedId)) selectGame(first.title_id);
