@@ -13,7 +13,7 @@ not observed is listed under "Not validated".
 | Loader | PS5 Payload Manager 0.6.3 → elfldr on 127.0.0.1:9021 | PLDMGR `/version`, process list |
 | Other payloads running | BFpilot 0.4.4, Orbit Store 1.9.2 | PLDMGR process list |
 | ShellCore hooks | installed, registration path `shellcore_bridge` | `GET /api/v1/system` |
-| Build under test | UniMount 0.1.0, clang 18, commit `c65ba80` (engine with review fixes) | `POST /api/v1/version` |
+| Build under test | UniMount 0.1.0, clang 18. Tests A–F ran on commit `c65ba80` (engine with review fixes); A, G and H were repeated on the release build, commit `f1c69a3` | `POST /api/v1/version` |
 | Test content | Title A, a 34.1 GB plaintext debug `.pkg`; Title B, a 9.6 GB `.exfat` image; the Orbit Store app, a 217 MB `.ffpkg` (PPSA99177); all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
 
 Launches were started and closed over the LAN, first with the test-only helper in `tools/hwtest/`
@@ -106,6 +106,15 @@ go through the Kraken path.
   1540x700 at device pixel ratio 1, no `backdrop-filter`, no Gamepad API. D-pad arrives as arrow
   keys, cross as a pointer click, circle as Escape (after which the system closes the browser).
   Square, triangle, L1, R1 and Options were not measured.
+
+### H. Settings — pass
+
+On the release build, `POST /api/v1/settings` returned the eight UniMount keys and
+`POST /api/v1/settings/update` applied them without a restart: `api_allow_launch: false` made the
+launch route answer `403 launch_disabled` at once; changing `compat_kraken_api_port` to 18097 and
+back rebound the listener within two seconds; `diagnostics_running_confirm_seconds: 45` was
+reported by the diagnostics route; an out-of-range port and a wrong type were rejected with 400 and
+left the file unchanged. `config.ini` kept all 82 comment lines and the unrelated settings.
 
 ## Not validated
 
