@@ -14,7 +14,7 @@ not observed is listed under "Not validated".
 | Other payloads running | BFpilot 0.4.4, Orbit Store 1.9.2 | PLDMGR process list |
 | ShellCore hooks | installed, registration path `shellcore_bridge` | `GET /api/v1/system` |
 | Build under test | UniMount 0.1.0, clang 18. Tests A–F ran on commit `c65ba80` (engine with review fixes); A, G and H were repeated on commit `f1c69a3`; A, G and I ran on the released build, commit `1fd2b8f` (reported as `1.7beta12-59-g1fd2b8`) | `POST /api/v1/version` |
-| Test content | Title A, a 34.1 GB plaintext debug `.pkg`; Title B, a 9.6 GB `.exfat` image; the Orbit Store app, a 217 MB `.ffpkg` (PPSA99177); all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
+| Test content | Title A, a 34.1 GB plaintext debug `.pkg`; Title B, a 9.6 GB `.exfat` image; the Orbit Store app, a 217 MB `.ffpkg` (PPSA99177); from section N also Title C, a `.ffpfsc` image; all in `/data/homebrew` | `POST /api/v1/games`, `/packages` |
 
 Launches were started and closed over the LAN, first with the test-only helper in `tools/hwtest/`
 and later with UniMount's own `POST /api/v1/games/launch` and `/close`. A launch counts as
@@ -262,6 +262,58 @@ Not run: closing a game after a kill without loading UniMount again (the failure
 adoption does not cover), a title with backport redirect sets or a writable `app0` cover, a
 same-application replacement after adoption, a refused record, and a stop request during adoption.
 
+### N. Sixth session: tile, waiting copies and a field failure (0.1.3) — pass
+
+Run on 2026-11-22 in the same boot as L and M, on the build of commit `fa7f953` (reported as
+`0.1.3`, `v0.1.2-1-gfa7f95`), the file published as `unimount_v0.1.3.elf`.
+
+The failure that led to this build was found on 0.1.2 in normal use, from the console's log; it
+was not staged. The Orbit Store app had been open in the background since the night before. A
+second copy of UniMount was loaded (it waited, as designed), the running copy was then stopped
+with a signal (it removed its three alias layers and exited, as designed), and two more copies
+were loaded. Three passive copies named `payload.elf` waited for the app to close, no UniMount was
+active, and every start from the home screen failed: the console recorded 16 `CE-105773-3` errors
+(`0x80940033`), which took the error history from 45 to 61 files. Stopping the three copies,
+closing the app through the helper and loading UniMount once restored it. Title C, a `.ffpfsc`
+image installed the night before, then started on 0.1.2: process alive after 30 s,
+`running_confirmed`, no new error.
+
+Checks on `fa7f953`. The error history held 61 files before and after every check.
+
+1. Update while a title runs (Title C under 0.1.2). First 0.1.3 copy: process
+   `unimount-wait.elf`, `[ADOPT] would adopt 4 layer(s)`, `[STARTUP] a previous copy is alive and
+   keeps working`, the existing notice. Second copy 7 s later: `[STARTUP] replaced waiting copy
+   pid=...`; the first copy logged `stop requested while waiting` and was gone, one waiting
+   process remained. After the title was closed through the API the waiting copy stopped 0.1.2
+   and started as 0.1.3 (`started after waiting 33 s`). Pass.
+2. Tile. On that start: `[SHELLICON] removed legacy tile: FAKE10101`, `AppInstallAll bridge
+   consumed: UNMT00001 result=0x00000000`, `[SHELLICON] installed: UNMT00001`. `/user/app` then
+   held `UNMT00001` with its `param.json` (name UniMount) and the 26,030-byte `icon0.png`, and no
+   `FAKE10101`. Later starts logged `already installed: UNMT00001`. Pass for files and log; how
+   the tile looks under Media was not observed from the PC.
+3. The field failure repeated. Orbit Store app running, UniMount stopped with PS5 Payload
+   Manager's kill (alias teardown, exit), 0.1.3 loaded: `[ADOPT] refused: no session record`,
+   `[STARTUP] no live previous copy: UniMount is not active while ... (Orbit Store) is open` and
+   the notice "UniMount is not active: Orbit Store is open. Close it to start UniMount. Until
+   then games cannot be started." A second load replaced the first copy; one waiting process.
+   When the app was closed through the helper the waiting copy started without another load
+   (`started after waiting 21 s`) and the API answered 2 s later. Pass.
+4. Adoption with a newer copy arriving (Title B). UniMount ended with SIGKILL; the first copy
+   logged `adopted 3 layer(s)` (process `shadowmountplus.elf`), the second waited
+   (`unimount-wait.elf`). On close: `released ...: 3 of 3 layer(s) removed in 1102 ms`,
+   `[STARTUP] newer waiting copy pid=... takes over; exiting`, and the second copy started. Pass.
+   The exiting copy also logs `stop requested while waiting for a game to close`, which is
+   misleading in this case.
+5. Adoption, Title A (debug `.pkg`). SIGKILL, new copy `adopted 5 layer(s)`; on close
+   `released ...: 5 of 5 layer(s) removed in 1068 ms` and the console kept answering. Pass.
+6. Title A, Title B, Title C and the Orbit Store app were each started through the API, reached
+   `running_confirmed` (20 s) with every stage `ok`, and were closed through the API. Pass.
+
+Not run: the reminder shown when the error history grows while a copy waits (nothing on the PC
+side makes the console record an error; host tests only), removal of a Kraken Mount tile (none
+was installed), a legacy tile that fails the check, a waiting copy of an older build when 0.1.3
+is loaded (it is named `payload.elf` and is not replaced), and two loads at the same moment.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
@@ -284,13 +336,15 @@ the ones recorded above.
 ## Not validated
 
 - Picture and sound of a running game (process-level evidence only).
-- Folder games, `.ffpfs`, `.ffpfsc`, UFS game images, external USB and M.2 sources, SMB: no such
-  content was on the console. These paths are ShadowMountPlus code that UniMount did not change,
-  apart from the execute-bit repair for folder games (upstream PR #226).
+- Folder games, `.ffpfs`, UFS game images, external USB and M.2 sources, SMB: no such content was
+  on the console. These paths are ShadowMountPlus code that UniMount did not change, apart from
+  the execute-bit repair for folder games (upstream PR #226). One `.ffpfsc` image has
+  process-level evidence since section N.
 - zstd- and LZ4-packed folders (no such game available); covered by host tests only.
 - A failing launch on hardware: the classifier is exercised by host tests built from this console's
   real error-history entries (CE-107750-0, CE-105779-9, CE-105773-3, CE-108262-9), but no launch
-  failed during these runs.
+  failed while UniMount was running. The 16 failures in section N happened with no UniMount
+  active, so no launch record was written for them.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
 - A cold-boot autoload of UniMount: it is in the autoload list after kstuff-lite, but no restart
   was run after that. After each of the two crashes Payload Manager came back with its autoload
@@ -300,5 +354,6 @@ the ones recorded above.
   a launch (one record).
 - Of the stop handling: a second stop request and the STOP file while a game runs.
 - Of adoption: see the end of section M.
+- Of the tile and the waiting copy (0.1.3): see the end of section N.
 - Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.
