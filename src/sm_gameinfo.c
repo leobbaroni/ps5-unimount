@@ -4,6 +4,7 @@
 #include "sm_l10n.h"
 #include "sm_limits.h"
 #include "sm_path_state.h"
+#include "sm_paths.h"
 
 // --- Game Metadata Parsing ---
 static bool extract_json_string(struct json_object *object, const char *key,
@@ -260,6 +261,49 @@ bool get_game_info(const char *base_path, const struct stat *param_st,
 
   store_cached_game_info(base_path, param_st, valid, out_id, out_name);
   return valid;
+}
+
+bool sm_gameinfo_appmeta_title(const char *title_id, char *out_name) {
+  out_name[0] = '\0';
+  if (!is_supported_game_title_id(title_id))
+    return false;
+  char path[MAX_PATH];
+  int written = snprintf(path, sizeof(path), "%s/%s/param.json", APPMETA_BASE,
+                         title_id);
+  if (written < 0 || written >= MAX_PATH)
+    return false;
+  int fd = open(path, O_RDONLY | O_NONBLOCK);
+  if (fd < 0)
+    return false;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+      st.st_size > MAX_PARAM_JSON_SIZE) {
+    close(fd);
+    return false;
+  }
+  size_t len = (size_t)st.st_size;
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) {
+    close(fd);
+    return false;
+  }
+  size_t offset = 0;
+  while (offset < len) {
+    ssize_t bytes = read(fd, buf + offset, len - offset);
+    if (bytes < 0 && errno == EINTR)
+      continue;
+    if (bytes <= 0)
+      break;
+    offset += (size_t)bytes;
+  }
+  close(fd);
+  buf[offset] = '\0';
+  struct json_object *root = json_tokener_parse(buf);
+  free(buf);
+  if (json_object_is_type(root, json_type_object))
+    extract_title_name(root, out_name);
+  json_object_put(root);
+  return out_name[0] != '\0';
 }
 
 bool directory_has_game_param(const char *dir_path, struct stat *param_st_out) {

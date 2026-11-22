@@ -36,6 +36,8 @@
 #define NOTIFY_ICON_DIR "/user/data/shadowmount"
 #define NOTIFY_ICON_FILE "/user/data/shadowmount/smp_icon.png"
 #define APP_DB_PATH "/system_data/priv/mms/app.db"
+// The console's error history (one entry per error it recorded).
+#define ERROR_HISTORY_DIR "/system_data/priv/error/history"
 
 /* Compile-time default scan roots (used when config has no scanpath entries). */
 #define SM_DEFAULT_SCAN_PATHS_INITIALIZER                                      \

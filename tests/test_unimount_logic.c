@@ -454,6 +454,76 @@ static void test_startup_wait(void) {
   assert(sm_restart_timeout_decide(false) == SM_RESTART_GIVE_UP);
 }
 
+static void test_wait_notice(void) {
+  const uint64_t s = 1000000ull;
+  sm_wait_notice_state_t st;
+
+  // A live previous copy: the "starts later" notice once, no reminders.
+  sm_wait_notice_init(&st);
+  assert(sm_wait_notice_decide(&st, true, 5, 1 * s) == SM_WAIT_NOTICE_WAITING);
+  assert(sm_wait_notice_decide(&st, true, 9, 4 * s) == SM_WAIT_NOTICE_NONE);
+  // It goes away during the wait: the blocking notice once.
+  assert(sm_wait_notice_decide(&st, false, 9, 7 * s) == SM_WAIT_NOTICE_BLOCKING);
+  assert(sm_wait_notice_decide(&st, false, 9, 10 * s) == SM_WAIT_NOTICE_NONE);
+  // A new console error: reminder, then at most one per 30 s.
+  assert(sm_wait_notice_decide(&st, false, 10, 13 * s) ==
+         SM_WAIT_NOTICE_REMINDER);
+  assert(sm_wait_notice_decide(&st, false, 11, 16 * s) == SM_WAIT_NOTICE_NONE);
+  // A throttled error does not come back later by itself.
+  assert(sm_wait_notice_decide(&st, false, 11, 50 * s) == SM_WAIT_NOTICE_NONE);
+  assert(sm_wait_notice_decide(&st, false, 12, 53 * s) ==
+         SM_WAIT_NOTICE_REMINDER);
+  // A shrinking history (rotation) only moves the baseline.
+  assert(sm_wait_notice_decide(&st, false, 2, 90 * s) == SM_WAIT_NOTICE_NONE);
+  assert(sm_wait_notice_decide(&st, false, 3, 93 * s) ==
+         SM_WAIT_NOTICE_REMINDER);
+  // Unreadable history: no reminder, the baseline is kept.
+  assert(sm_wait_notice_decide(&st, false, -1, 130 * s) == SM_WAIT_NOTICE_NONE);
+  assert(sm_wait_notice_decide(&st, false, 3, 133 * s) == SM_WAIT_NOTICE_NONE);
+
+  // No previous copy from the start: the blocking notice first; a history
+  // unreadable at first gets its baseline later.
+  sm_wait_notice_init(&st);
+  assert(sm_wait_notice_decide(&st, false, -1, 1 * s) ==
+         SM_WAIT_NOTICE_BLOCKING);
+  assert(sm_wait_notice_decide(&st, false, 4, 4 * s) == SM_WAIT_NOTICE_NONE);
+  assert(sm_wait_notice_decide(&st, false, 5, 7 * s) ==
+         SM_WAIT_NOTICE_REMINDER);
+  // A previous copy appears (an adopting copy): announced once, no reminder.
+  assert(sm_wait_notice_decide(&st, true, 8, 10 * s) == SM_WAIT_NOTICE_WAITING);
+  assert(sm_wait_notice_decide(&st, true, 9, 13 * s) == SM_WAIT_NOTICE_NONE);
+  // Gone again: blocking notice again, fresh baseline.
+  assert(sm_wait_notice_decide(&st, false, 9, 16 * s) ==
+         SM_WAIT_NOTICE_BLOCKING);
+  assert(sm_wait_notice_decide(&st, false, 9, 19 * s) == SM_WAIT_NOTICE_NONE);
+}
+
+static void test_legacy_tile_param(void) {
+  static const char shortcut[] =
+      "{\"applicationCategoryType\": 66048, \"titleId\": \"FAKE10101\", "
+      "\"deeplinkUri\": \"http://127.0.0.1:10101/\"}";
+  size_t length = sizeof(shortcut) - 1u;
+  assert(sm_legacy_tile_param_matches(shortcut, length, "FAKE10101"));
+  // Another title id, or a cut-off file, does not match.
+  assert(!sm_legacy_tile_param_matches(shortcut, length, "KRKN00001"));
+  assert(!sm_legacy_tile_param_matches(shortcut, length - 20u, "FAKE10101"));
+  // A regular title (no deeplink, or not a local address) does not match.
+  static const char game[] =
+      "{\"titleId\": \"PPSA01234\", \"localizedParameters\": {}}";
+  assert(!sm_legacy_tile_param_matches(game, sizeof(game) - 1u, "PPSA01234"));
+  static const char remote[] =
+      "{\"titleId\": \"KRKN00001\", \"deeplinkUri\": \"http://10.0.0.1:1/\"}";
+  assert(!sm_legacy_tile_param_matches(remote, sizeof(remote) - 1u,
+                                       "KRKN00001"));
+  // Embedded NUL bytes do not end the search early.
+  static const char nul[] =
+      "{\0\"deeplinkUri\": \"http://127.0.0.1:8080/\", \"titleId\": "
+      "\"KRKN00001\"}";
+  assert(sm_legacy_tile_param_matches(nul, sizeof(nul) - 1u, "KRKN00001"));
+  assert(!sm_legacy_tile_param_matches(NULL, 0, "KRKN00001"));
+  assert(!sm_legacy_tile_param_matches(shortcut, length, ""));
+}
+
 static void test_session_kind(void) {
   static const char app0[] = "/mnt/sandbox/PPSA01234_000/app0";
   // Plain directory aliases at the sandbox root.
@@ -1064,6 +1134,8 @@ int main(void) {
   test_session_record_format();
   test_session_adopt_decide();
   test_startup_wait();
+  test_wait_notice();
+  test_legacy_tile_param();
   test_session_kind();
   test_stop_decide();
   test_kept_layers();
@@ -1078,7 +1150,7 @@ int main(void) {
   test_auto_decide();
   test_ampr();
   puts("unimount logic: session record, adoption checks, startup wait, "
-       "session kinds, stop deferral, kept layers, takeover, "
+       "wait notices, legacy tiles, session kinds, stop deferral, kept layers, takeover, "
        "adoption, ledger, compat listener, auto-mount and AMPR selection passed");
   return 0;
 }

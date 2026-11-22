@@ -114,7 +114,7 @@ This works for supported game folders and image files. Updates to the list are d
 
 ## Web interface: library and installation
 
-The built-in web interface is a game library and installation manager, not just a configuration page. It is available through the **ShadowMount+** launcher (the home-screen tile keeps that name) on the PS5 or at `http://<PS5_IP>:10101` on a trusted local network. The main tabs are **Library**, **Installation**, and **Settings**. The interface also supports TV screens and gamepad navigation.
+The built-in web interface is a game library and installation manager, not just a configuration page. It is available through the **UniMount** launcher tile (Media tab) on the PS5 or at `http://<PS5_IP>:10101` on a trusted local network. The main tabs are **Library**, **Installation**, and **Settings**. The interface also supports TV screens and gamepad navigation.
 
 ### Library: browse and manage games
 

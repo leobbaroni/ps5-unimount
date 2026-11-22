@@ -79,14 +79,14 @@ From `main()` in `src/main.c`.
 
 Startup:
 
-1. Initialise user service and app-install utilities; install signal handlers.
-2. Running managed game: if a big app runs (`sceSystemServiceGetAppIdOfRunningBigApp() > 0`) and its title is ours (`/user/app/<TID>/mount.lnk`, `mount_img.lnk` or `mount.lnk.cleanup`, or a nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be determined, stay passive (no signal to an older instance, no mount, scan, hook or service) and check again every 3 s; signals end the wait at once. Unmanaged apps (retail games, `NPXS` system apps) do not delay startup. Rule: `sm_startup_decide`. Before waiting, the predecessor's session record is evaluated (`sm_adopt.c`): with a live predecessor only a dry-run line is logged; without one, a record that passes every check is adopted instead of waiting: the copy removes the recorded layers when the game exits, exactly as the owner would, and then repeats this step. See "Session record and adoption" in [`unimount-ownership.md`](unimount-ownership.md).
-3. Find an older `shadowmountplus.elf`; if one exists, ask it to exit (one SIGTERM per instance) and wait up to 60 s, then repeat step 2 (a game may have started meanwhile). If it is still alive after 60 s: while a big app runs it deferred its stop for that game, so wait for the app to close and keep waiting for it; otherwise exit without starting (`sm_restart_timeout_decide`). Two instances never run together. Set this process's thread name to `shadowmountplus.elf`.
+1. Initialise user service and app-install utilities; install signal handlers. Ask any other copy named `unimount-wait.elf` (a copy that has not started yet) to exit with SIGTERM and wait up to 3 s for it, then take that name until step 3 ends. The newest copy wins, so at most one copy waits.
+2. Running managed game: if a big app runs (`sceSystemServiceGetAppIdOfRunningBigApp() > 0`) and its title is ours (`/user/app/<TID>/mount.lnk`, `mount_img.lnk` or `mount.lnk.cleanup`, or a nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be determined, stay passive (no signal to an older instance, no mount, scan, hook or service) and check again every 3 s; signals end the wait at once. Unmanaged apps (retail games, `NPXS` system apps) do not delay startup. Rule: `sm_startup_decide`. Before waiting, the predecessor's session record is evaluated (`sm_adopt.c`): with a live predecessor only a dry-run line is logged; without one, a record that passes every check is adopted instead of waiting: the copy removes the recorded layers when the game exits, exactly as the owner would, and then repeats this step. See "Session record and adoption" in [`unimount-ownership.md`](unimount-ownership.md). While it waits, the copy notifies once per state (`sm_wait_notice_decide`): with a live predecessor that it keeps working, without one that UniMount is not active and games cannot be started until the app is closed; in the second state a growth of the console's error history (`/system_data/priv/error/history`, counted on every poll) repeats that notice at most every 30 s.
+3. Find an older `shadowmountplus.elf`; if one exists, ask it to exit (one SIGTERM per instance) and wait up to 60 s, then repeat step 2 (a game may have started meanwhile). If it is still alive after 60 s: while a big app runs it deferred its stop for that game, so wait for the app to close and keep waiting for it; otherwise exit without starting (`sm_restart_timeout_decide`). Two instances never run together. Set this process's thread name to `shadowmountplus.elf`; a signal received up to this point (a newer copy retiring this one) ends the copy here, and a newer copy that signalled it waits for it under that name as in this step.
 4. Clear a stale STOP file; rotate the log; load or migrate the configuration; initialise the scanner service.
 5. Wait for kstuff; stop a standalone BackPork if one runs.
 6. Kraken Mount takeover (`sm_takeover_run`), then write the ownership ledger and start the session record writer (which replaces or removes a record left by an earlier instance).
 7. Start the compatible listener (8097) and the automatic `.pkg` mount.
-8. Start mdbg, the ShellCore service and hooks, the launcher tile, the lifecycle watcher, the ShellCore flags monitor, the AMPR updater.
+8. Start mdbg, the ShellCore service and hooks, the launcher tile (with the API enabled: remove the legacy `FAKE10101` and `KRKN00001` web-shortcut tiles, then install `UNMT00001` if missing), the lifecycle watcher, the ShellCore flags monitor, the AMPR updater.
 9. Remount `/system_ex` writable, notify, clean stale mount directories, wait for `/dev/lvd2` to be released, clean staged links and duplicate title mounts, run app.db maintenance.
 10. Startup scan, then the HTTP API on 10101, then the steady-state scan loop.
 
@@ -113,7 +113,7 @@ Layers kept for a live game stay in the session record; a later instance started
 
 | Item | Value |
 | --- | --- |
-| Process name | `shadowmountplus.elf` |
+| Process name | `shadowmountplus.elf` (`unimount-wait.elf` until startup step 3 ends) |
 | Data directory | `/data/shadowmount/` |
 | Config, profiles, manual list, log | `config.ini`, `profiles.ini`, `manual.lst`, `debug.log` (previous run: `debug.log.1`) |
 | Stop request file | `/data/shadowmount/STOP` |
@@ -123,7 +123,7 @@ Layers kept for a live game stay in the session record; a later instance started
 | zstd-folder AMPR overlays | `/data/shadowmount/ampr-ng/<TITLEID>/fakelib` |
 | Emulator libraries, global fakelib | `/data/shadowmount/emus`, `/data/shadowmount/fakelib` |
 | Real Kraken Mount's data (read only) | `/data/krakenmount` |
-| Launcher tile title | `FAKE10101` |
+| Launcher tile title | `UNMT00001` ("UniMount", Media tab, opens `http://127.0.0.1:10101/`) |
 | HTTP API and web interface | TCP 10101 (`[api] port`) |
 | Kraken-compatible listener | TCP 8097 (`[compat] kraken_api_port`) |
 | Payload loader (elfldr) | TCP 9021 |

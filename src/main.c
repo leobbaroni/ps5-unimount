@@ -53,6 +53,11 @@
 #endif
 
 #define PAYLOAD_NAME "shadowmountplus.elf"
+// A copy that has not started yet (it waits for a game or a predecessor).
+// At most one exists: a newer copy retires it.
+#define WAITING_PAYLOAD_NAME "unimount-wait.elf"
+#define WAITING_RETIRE_POLL_US 100000u
+#define WAITING_RETIRE_MAX_US 3000000u
 #define BACKPORK_PROCESS_NAME "backpork.elf"
 #define BACKPORK_PROCESS_NAME_ALT "ps5-backpork.elf"
 #define RESTART_WAIT_POLL_US 200000u
@@ -653,6 +658,84 @@ static bool startup_poll_sleep(void) {
   return g_stop_signals == 0;
 }
 
+// Newest wins: ask any other waiting copy to exit (it ends its wait on a
+// signal) and wait briefly for it. *signaled_pid keeps the last one signaled,
+// so that if it was already renaming itself to PAYLOAD_NAME, the restart
+// hand-over waits for it without a second, forcing request.
+static void retire_waiting_copies(pid_t *signaled_pid) {
+  for (;;) {
+    pid_t pid = find_pid_by_name(WAITING_PAYLOAD_NAME, true);
+    if (pid <= 0)
+      return;
+    if (pid == *signaled_pid) {
+      log_debug("[STARTUP] waiting copy pid=%ld did not exit within %u ms",
+                (long)pid, WAITING_RETIRE_MAX_US / 1000u);
+      return;
+    }
+    if (kill(pid, SIGTERM) != 0) {
+      if (errno == ESRCH)
+        continue;
+      log_debug("[STARTUP] could not signal waiting copy pid=%ld: %s",
+                (long)pid, strerror(errno));
+      return;
+    }
+    *signaled_pid = pid;
+    for (unsigned int waited_us = 0; waited_us < WAITING_RETIRE_MAX_US &&
+                                     find_pid_by_name(WAITING_PAYLOAD_NAME,
+                                                      true) == pid;
+         waited_us += WAITING_RETIRE_POLL_US)
+      (void)sceKernelUsleep(WAITING_RETIRE_POLL_US);
+    if (find_pid_by_name(WAITING_PAYLOAD_NAME, true) != pid)
+      log_debug("[STARTUP] replaced waiting copy pid=%ld", (long)pid);
+  }
+}
+
+// Entries in the console's error history; -1 when it cannot be read.
+static long count_error_history_entries(void) {
+  DIR *dir = opendir(ERROR_HISTORY_DIR);
+  if (!dir)
+    return -1;
+  long count = 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (entry->d_name[0] != '.')
+      ++count;
+  }
+  closedir(dir);
+  return count;
+}
+
+// The notices of a waiting copy; see sm_wait_notice_decide.
+static void announce_wait(sm_wait_notice_state_t *notice,
+                          bool predecessor_alive, const char *title_id) {
+  long entries = predecessor_alive ? -1 : count_error_history_entries();
+  sm_wait_notice_t kind = sm_wait_notice_decide(
+      notice, predecessor_alive, entries, monotonic_time_us());
+  if (kind == SM_WAIT_NOTICE_NONE)
+    return;
+  if (kind == SM_WAIT_NOTICE_WAITING) {
+    log_debug("[STARTUP] a previous copy is alive and keeps working while %s "
+              "runs",
+              title_id);
+    notify_system_l10n(SM_L10N_STARTUP_GAME_WAITING, title_id);
+    return;
+  }
+  char name[MAX_TITLE_NAME];
+  if (!sm_gameinfo_appmeta_title(title_id, name))
+    (void)strlcpy(name, title_id, sizeof(name));
+  if (kind == SM_WAIT_NOTICE_BLOCKING) {
+    log_debug("[STARTUP] no live previous copy: UniMount is not active while "
+              "%s (%s) is open",
+              title_id, name);
+  } else {
+    log_debug("[STARTUP] console error history gained entries while %s is "
+              "open; showing the notice again (any console error counts, "
+              "not only a blocked game start)",
+              title_id);
+  }
+  notify_system_l10n(SM_L10N_STARTUP_GAME_BLOCKING, name);
+}
+
 static char g_startup_waited_title[MAX_TITLE_ID];
 static uint64_t g_startup_waited_us;
 static bool g_adopt_dry_run_logged;
@@ -679,6 +762,8 @@ static bool wait_while_managed_game_runs(void) {
   bool waiting = false;
   bool adoption_checked = false;
   bool predecessor_seen = false;
+  sm_wait_notice_state_t notice;
+  sm_wait_notice_init(&notice);
   uint64_t started_us = monotonic_time_us();
   char title_id[MAX_TITLE_ID];
   for (;;) {
@@ -718,6 +803,15 @@ static bool wait_while_managed_game_runs(void) {
         return false;
       }
       if (adopted == SM_ADOPT_RELEASED) {
+        // Adoption took PAYLOAD_NAME; this copy is a waiting one again. A
+        // copy loaded meanwhile is newer and takes over.
+        syscall(SYS_thr_set_name, -1, WAITING_PAYLOAD_NAME);
+        pid_t newer = find_pid_by_name(WAITING_PAYLOAD_NAME, true);
+        if (newer > 0) {
+          log_debug("[STARTUP] newer waiting copy pid=%ld takes over; exiting",
+                    (long)newer);
+          return false;
+        }
         adoption_checked = false;
         continue;  // the startup decision is made again from the top
       }
@@ -727,11 +821,12 @@ static bool wait_while_managed_game_runs(void) {
         printf("[STOP] Cleared stale stop flag before waiting: %s\n", KILL_FILE);
       log_debug("[STARTUP] %s is running; waiting for it to close before "
                 "starting", title_id);
-      notify_system_l10n(SM_L10N_STARTUP_GAME_WAITING, title_id);
       (void)strlcpy(g_startup_waited_title, title_id,
                     sizeof(g_startup_waited_title));
       waiting = true;
     }
+    // An unknown process list counts as a live predecessor (the milder notice).
+    announce_wait(&notice, predecessor != 0, title_id);
     if (!startup_poll_sleep())
       return false;
   }
@@ -893,6 +988,9 @@ int main(void) {
   // Never start (or replace a predecessor) under a running managed game, and
   // never run alongside a predecessor that did not stop.
   pid_t signaled_pid = 0;
+  // At most one copy waits: until it starts, this copy is the waiting one.
+  retire_waiting_copies(&signaled_pid);
+  syscall(SYS_thr_set_name, -1, WAITING_PAYLOAD_NAME);
   bool deferral_logged = false;
   for (;;) {
     if (!wait_while_managed_game_runs()) {
@@ -954,6 +1052,15 @@ int main(void) {
     return 1;
   }
   syscall(SYS_thr_set_name, -1, PAYLOAD_NAME);
+  // A newer copy that found this one under WAITING_PAYLOAD_NAME signals it
+  // before it waits for a PAYLOAD_NAME instance itself: checked after the
+  // rename, so a signal sent at any point up to here ends this copy.
+  if (g_stop_signals != 0) {
+    log_debug("[STARTUP] stop requested before starting (a newer copy or the "
+              "user); exiting");
+    sceUserServiceTerminate();
+    return 0;
+  }
 
   if (remove(KILL_FILE) == 0) {
     printf("[STOP] Cleared stale stop flag at startup: %s\n", KILL_FILE);

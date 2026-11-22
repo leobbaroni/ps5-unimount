@@ -332,6 +332,57 @@ sm_restart_timeout_t sm_restart_timeout_decide(bool app_running) {
   return app_running ? SM_RESTART_WAIT_FOR_APP : SM_RESTART_GIVE_UP;
 }
 
+void sm_wait_notice_init(sm_wait_notice_state_t *state) {
+  memset(state, 0, sizeof(*state));
+  state->shown = SM_WAIT_NOTICE_NONE;
+  state->error_entries = -1;
+}
+
+sm_wait_notice_t sm_wait_notice_decide(sm_wait_notice_state_t *state,
+                                       bool predecessor_alive,
+                                       long error_entries, uint64_t now_us) {
+  sm_wait_notice_t kind =
+      predecessor_alive ? SM_WAIT_NOTICE_WAITING : SM_WAIT_NOTICE_BLOCKING;
+  if (state->shown != kind) {
+    state->shown = kind;
+    state->error_entries = predecessor_alive ? -1 : error_entries;
+    return kind;
+  }
+  if (predecessor_alive || error_entries < 0)
+    return SM_WAIT_NOTICE_NONE;
+  long previous = state->error_entries;
+  // A throttled or shrinking history only moves the baseline.
+  state->error_entries = error_entries;
+  if (previous < 0 || error_entries <= previous)
+    return SM_WAIT_NOTICE_NONE;
+  if (state->reminded && now_us >= state->reminded_us &&
+      now_us - state->reminded_us < SM_WAIT_REMINDER_INTERVAL_US)
+    return SM_WAIT_NOTICE_NONE;
+  state->reminded = true;
+  state->reminded_us = now_us;
+  return SM_WAIT_NOTICE_REMINDER;
+}
+
+static bool text_contains(const char *text, size_t length,
+                          const char *needle) {
+  size_t needle_length = strlen(needle);
+  if (needle_length == 0 || needle_length > length)
+    return false;
+  for (size_t i = 0; i + needle_length <= length; ++i) {
+    if (memcmp(text + i, needle, needle_length) == 0)
+      return true;
+  }
+  return false;
+}
+
+bool sm_legacy_tile_param_matches(const char *text, size_t length,
+                                  const char *title_id) {
+  return text && title_id && title_id[0] != '\0' &&
+         text_contains(text, length, "\"deeplinkUri\"") &&
+         text_contains(text, length, "http://127.0.0.1:") &&
+         text_contains(text, length, title_id);
+}
+
 sm_layer_kind_t sm_sandbox_layer_kind(bool unionfs, const char *mount_path,
                                       const char *app0_path) {
   if (unionfs)

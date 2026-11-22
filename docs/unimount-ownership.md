@@ -7,8 +7,25 @@ takes over from them at startup and keeps them from coming back.
 
 Compatibility anchors that are deliberately unchanged: process/thread name
 `shadowmountplus.elf`, data directory `/data/shadowmount`, API port 10101 and
-its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`.
+its routes, Kraken caches in `/data/shadowmount/kraken/<TID>`.
 `/data/krakenmount` (real Kraken's data) is only read, never changed.
+
+Home-screen tile: with the API enabled, UniMount installs its own web-shortcut
+tile `UNMT00001` ("UniMount", Media tab, opens `http://127.0.0.1:10101/`)
+when it is missing. Before that it removes the tiles of ShadowMountPlus
+(`FAKE10101`) and Kraken Mount (`KRKN00001`), but only when
+`/user/app/<ID>/sce_sys/param.json` is at most 8 KB and names `"deeplinkUri"`,
+`http://127.0.0.1:` and the id; otherwise the title is left alone and the
+reason is logged. Removal is `sceAppInstUtilAppUnInstall`; if the directory
+is still there afterwards, only `sce_sys/param.json` and `sce_sys/icon0.png`
+are deleted and `sce_sys` and the title directory are removed with `rmdir`
+(nothing is deleted recursively). This runs on every start. Log lines: `[SHELLICON] removed legacy
+tile: <ID>` (with `(directory removed after the uninstall call)` when the
+files had to be removed), `[SHELLICON] legacy tile uninstall failed: <ID>
+code=0x<code>`, `[SHELLICON] legacy tile <ID> left alone: <reason>`,
+`[SHELLICON] legacy tile <ID>: directory kept: <error>`, then
+`[SHELLICON] already installed: UNMT00001` or `[SHELLICON] installed:
+UNMT00001`.
 
 ## Startup order
 
@@ -17,7 +34,8 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
    checks the running big app. If it is one of our titles (`mount.lnk`,
    `mount_img.lnk` or `mount.lnk.cleanup` in `/user/app/<TID>`, or a
    nullfs/unionfs on `/system_ex/app/<TID>`) or its title cannot be
-   determined, UniMount waits: it logs and notifies once, checks every 3 s and
+   determined, UniMount waits: it logs and notifies (see "Notices while
+   waiting" below), checks every 3 s and
    exits at once on a signal (the STOP file too when no older instance runs).
    A retail game or a system app does not delay startup. This is the rule
    UniMount already follows for a game running under real Kraken Mount, now
@@ -26,6 +44,31 @@ its routes, title `FAKE10101`, Kraken caches in `/data/shadowmount/kraken/<TID>`
    game's owner (see "Session record and adoption"): with a live predecessor
    it only logs whether it could adopt the session; without one it adopts a
    record that passes every check instead of waiting.
+
+   **One waiting copy.** From its first instruction until step 1 ends, a
+   copy is named `unimount-wait.elf`. Before taking that name it sends
+   SIGTERM to any other copy with that name and waits up to 3 s for it to go,
+   so the newest copy wins and at most one copy waits. The retired copy ends
+   its wait on the signal. A retired copy that had already left the wait
+   checks for a signal right after it renames itself to
+   `shadowmountplus.elf` and exits there; the newer copy then finds it under
+   that name and waits for it as in step 1, without a second signal. A copy
+   that adopted a session (adoption takes the name `shadowmountplus.elf`)
+   takes the waiting name again afterwards and exits if a newer waiting copy
+   exists. Copies loaded within the same few milliseconds are not covered.
+
+   **Notices while waiting.** With a live predecessor the notice is
+   "UniMount: `<TID>` is running. UniMount starts when the game is closed."
+   (the predecessor keeps working). Without one, at the start of the wait or
+   when the predecessor goes away, the notice is "UniMount is not active:
+   `<name>` is open. Close it to start UniMount. Until then games cannot be
+   started.", with the title's name from `/user/appmeta/<TID>/param.json`
+   (the title id when that cannot be read). Each of the two states is
+   announced once when it begins. In the second state the copy counts the
+   entries of the console's error history (`/system_data/priv/error/history`)
+   on every 3 s poll; when the count grows it shows the second notice again
+   and logs one line, at most once every 30 s. Any new console error counts,
+   not only a game that failed to start, so this is a hint, not a diagnosis.
 1. An older `shadowmountplus.elf` (real ShadowMountPlus or an older UniMount)
    is asked to exit (one SIGTERM per instance) and awaited for up to 60 s;
    then step 0 is checked again. An instance still alive after 60 s while a
@@ -147,7 +190,15 @@ Log lines (in `debug.log`; after the next start in `debug.log.1`):
 | Line | Meaning |
 | --- | --- |
 | `[STARTUP] <TID> is running; waiting for it to close before starting` | Step 0 wait began (`a game` when the title is unknown). |
-| `[STARTUP] stop requested while waiting for <TID> to close` | A signal or STOP file ended the wait; nothing was started. |
+| `[STARTUP] replaced waiting copy pid=<pid>` | This newer copy asked an older waiting copy to exit and it went (or renamed itself to `shadowmountplus.elf`). |
+| `[STARTUP] waiting copy pid=<pid> did not exit within 3000 ms` | It is still there; it exits as soon as it sees the signal and never starts. |
+| `[STARTUP] could not signal waiting copy pid=<pid>: <error>` | The older waiting copy was not asked to exit. |
+| `[STARTUP] a previous copy is alive and keeps working while <TID> runs` | Wait with a live predecessor; the first notice. |
+| `[STARTUP] no live previous copy: UniMount is not active while <TID> (<name>) is open` | Wait without a live predecessor (at the start or after it went away); the second notice. |
+| `[STARTUP] console error history gained entries while <TID> is open; showing the notice again (any console error counts, not only a blocked game start)` | Reminder, at most once every 30 s. |
+| `[STARTUP] newer waiting copy pid=<pid> takes over; exiting` | After an adoption, a newer copy was found waiting. |
+| `[STARTUP] stop requested before starting (a newer copy or the user); exiting` | A signal arrived after the wait ended, before startup went on. |
+| `[STARTUP] stop requested while waiting for <TID> to close` | A signal or STOP file ended the wait (also when a newer copy retired this one); nothing was started. |
 | `[STARTUP] <TID> closed; started after waiting <N> s` | First lines after the log rotation, once the wait ended. |
 | `[RESTART] previous instance pid=<pid> deferred its stop for a running game; waiting for the game to close` | Step 1 timed out while a big app runs. |
 | `[RESTART] previous instance pid=<pid> did not stop within 60 s; not starting alongside it` | Step 1 gave up; this copy exits. |
@@ -252,7 +303,8 @@ no scanner, no API):
    directories as entries without a mount, into its own fakelib session and the
    redirect sets into its backport sessions, takes the thread name
    `shadowmountplus.elf` (so a copy started after it sees a predecessor and
-   does not adopt the same session again), restarts the record writer under
+   does not adopt the same session again; after the release it takes
+   `unimount-wait.elf` again), restarts the record writer under
    its own pid, logs and notifies once.
 2. It watches the game pid with `kqueue` (`EVFILT_PROC`, `NOTE_EXIT`) and a
    250 ms liveness poll in the main thread.

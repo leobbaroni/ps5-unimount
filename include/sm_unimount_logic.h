@@ -102,6 +102,43 @@ typedef enum {
 // alongside it.
 sm_restart_timeout_t sm_restart_timeout_decide(bool app_running);
 
+// --- Notices of a copy that waits for a running game ---
+
+#define SM_WAIT_REMINDER_INTERVAL_US 30000000ull
+
+typedef enum {
+  SM_WAIT_NOTICE_NONE = 0,
+  SM_WAIT_NOTICE_WAITING,   // a previous copy is alive and keeps working
+  SM_WAIT_NOTICE_BLOCKING,  // no live previous copy: nobody serves games
+  SM_WAIT_NOTICE_REMINDER,  // blocking notice again: new console error(s)
+} sm_wait_notice_t;
+
+typedef struct {
+  sm_wait_notice_t shown;  // last state announced (WAITING or BLOCKING)
+  long error_entries;      // error history entries at the last poll; -1 none
+  bool reminded;
+  uint64_t reminded_us;
+} sm_wait_notice_state_t;
+
+void sm_wait_notice_init(sm_wait_notice_state_t *state);
+
+// One poll of a waiting copy. Each change between "previous copy alive" and
+// "no live previous copy" is announced once. Without a live previous copy, a
+// growing error history (error_entries, -1 when unreadable) gives a reminder
+// at most once every SM_WAIT_REMINDER_INTERVAL_US; any new console error
+// counts, so it is a hint only.
+sm_wait_notice_t sm_wait_notice_decide(sm_wait_notice_state_t *state,
+                                       bool predecessor_alive,
+                                       long error_entries, uint64_t now_us);
+
+// --- Legacy home-screen tiles ---
+
+// Whether the text of /user/app/<title_id>/sce_sys/param.json describes a
+// local web shortcut of that title: it names "deeplinkUri", a
+// http://127.0.0.1: address and the title id itself.
+bool sm_legacy_tile_param_matches(const char *text, size_t length,
+                                  const char *title_id);
+
 // --- Sandbox session kinds ---
 
 typedef enum {

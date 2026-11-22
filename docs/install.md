@@ -48,8 +48,10 @@ Do not run the standalone BackPork payload while fakelib is enabled in UniMount.
 To update later, install the new version from the same list and load it. The new copy stops the old
 one and carries on with the same library.
 
-If a game that UniMount mounted is running when you load the new version, the new copy waits,
-shows a notification, and takes over once the game is closed.
+If a game or app that UniMount mounted is running when you load the new version, the new copy waits,
+shows a notification, and takes over once the game is closed. Loading UniMount again while such a
+game or app is open only queues the new copy: it does not start until the game or app is closed.
+Only one copy waits at a time; the copy loaded last replaces an older waiting one.
 
 > [!WARNING]
 > Do not stop UniMount while a game started from a debug `.pkg` is running, for example with the
@@ -102,6 +104,9 @@ Other folders can be added in the web interface under **Sources**, or as `[scan]
    games.
 3. The games appear on the home screen. Start them there as usual. Images are attached when a game
    is launched and released when it is closed.
+4. UniMount adds a tile named **UniMount** under Media. It opens the web interface in the
+   console's own browser. UniMount removes the **ShadowMount+** and **Kraken Mount** tiles that
+   those payloads added. The tile needs the web interface (`[api] enabled`, on by default).
 
 ## The web interface
 
@@ -151,6 +156,12 @@ The full list is in [`config.ini.example`](../config.ini.example).
 - **A game has an icon but does not start.** Open its **Diagnostics** in the web interface. It
   names the stage that failed and the console's error code. The full log is
   `/data/shadowmount/debug.log`.
+- **No game starts ("Can't start the game or app"), and a notice says UniMount is not active
+  because an app is open.** A game or app that UniMount mounted is still open, for example in the
+  background, and UniMount waits for it before it starts. Close that app: highlight it, press the
+  Options button and choose Close. UniMount then starts by itself; you do not need to load it
+  again. While it waits, UniMount shows the notice again (at most every 30 seconds) when the
+  console records a new error. Any console error does this, not only a game that failed to start.
 - **Nothing appears on the home screen.** Check that kstuff-lite was loaded first, and that the
   game sits directly inside one of the scan folders, not one level deeper.
 - **The web interface does not open.** Check the console's address and that `[api] enabled` is on
@@ -165,4 +176,4 @@ The full list is in [`config.ini.example`](../config.ini.example).
 
 Remove UniMount from autoload and delete it in PS5 Payload Manager. Its settings, cache and log stay
 in `/data/shadowmount/`; delete that folder to remove them. Games it registered stay on the home
-screen until they are removed there or from the web interface.
+screen until they are removed there or from the web interface. The UniMount tile also stays.

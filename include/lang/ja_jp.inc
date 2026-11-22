@@ -95,4 +95,7 @@ static const char *const g_ja_jp[SM_L10N_COUNT] = {
     /* English: UniMount: took over the layers of %s.\nThey are removed when the game is closed. */
     [SM_L10N_ADOPT_SESSION] =
         "UniMount: took over the layers of %s.\nThey are removed when the game is closed.",
+    /* English: UniMount is not active: %s is open.\nClose it to start UniMount. Until then games cannot be started. */
+    [SM_L10N_STARTUP_GAME_BLOCKING] =
+        "UniMount is not active: %s is open.\nClose it to start UniMount. Until then games cannot be started.",
 };
