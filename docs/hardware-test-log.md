@@ -314,6 +314,22 @@ side makes the console record an error; host tests only), removal of a Kraken Mo
 was installed), a legacy tile that fails the check, a waiting copy of an older build when 0.1.3
 is loaded (it is named `payload.elf` and is not replaced), and two loads at the same moment.
 
+### O. Use after 0.1.3: launch records and the owner's report
+
+Read on 2026-11-23 from the console running the released 0.1.3 (`fa7f953`), a day after N. Nothing
+was staged: these are the console's own launch records of normal use, and what its owner reported.
+
+- Title C (`.ffpfsc`): one session of 1,178 s on 0.1.2 and one of 75,225 s on 0.1.3 (the game was
+  left open), both `exited_normally`. The owner reports that it plays normally.
+- Title D, a second `.exfat` image added after N: one session of 1,310 s, `exited_normally`.
+- A PS4 package installed on the console, which UniMount does not mount and lists as installed:
+  one session of 403 s was recorded, `exited_normally`.
+- The Orbit Store app: three sessions of 7 to 11 minutes, `exited_normally`, and one running when
+  the records were read.
+- Folder game: the owner reports that Title B ran from an extracted folder. No log of that run was
+  collected, and the game list showed Title B as an `.exfat` image when the records were read.
+- The error history still held 61 files.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
@@ -335,11 +351,12 @@ the ones recorded above.
 
 ## Not validated
 
-- Picture and sound of a running game (process-level evidence only).
-- Folder games, `.ffpfs`, UFS game images, external USB and M.2 sources, SMB: no such content was
-  on the console. These paths are ShadowMountPlus code that UniMount did not change, apart from
-  the execute-bit repair for folder games (upstream PR #226). One `.ffpfsc` image has
-  process-level evidence since section N.
+- Picture and sound of a running game were never observed from the test PC. The owner's reports
+  are in section O.
+- `.ffpfs`, UFS game images, external USB and M.2 sources, SMB: no such content was on the
+  console. These paths are ShadowMountPlus code that UniMount did not change, apart from
+  the execute-bit repair for folder games (upstream PR #226). One `.ffpfsc` image has launch
+  records (sections N and O); a folder game rests on the owner's report only (section O).
 - zstd- and LZ4-packed folders (no such game available); covered by host tests only.
 - A failing launch on hardware: the classifier is exercised by host tests built from this console's
   real error-history entries (CE-107750-0, CE-105779-9, CE-105773-3, CE-108262-9), but no launch

@@ -37,8 +37,8 @@ Version 0.1.3 (`VERSION`). It was tested on one console: firmware 13.60, kstuff-
 
 Not validated (copied from the test log):
 
-- Picture and sound of a running game (process-level evidence only).
-- Folder games, `.ffpfs`, `.ffpfsc`, UFS game images, external USB and M.2 sources, SMB. These are ShadowMountPlus code that UniMount did not change, apart from the execute-bit repair for folder games.
+- Picture and sound of a running game were never observed from the test PC. The console's owner reports playing a `.ffpfsc` title and a folder game normally (test log, section O).
+- `.ffpfs`, UFS game images, external USB and M.2 sources, SMB. These are ShadowMountPlus code that UniMount did not change. A folder game rests on the owner's report only.
 - zstd- and LZ4-packed folders (host tests only).
 - A failing launch on hardware: the classifier is tested on the host against real error-history entries, but no launch failed during the hardware runs.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager.
@@ -49,10 +49,10 @@ Not validated (copied from the test log):
 | Source | How it is mounted | Verified on hardware |
 | --- | --- | --- |
 | Plaintext debug PS5 `.pkg` | Kraken path: cache in `/data/shadowmount/kraken/<TITLEID>`, data read from the `.pkg` | Yes, one title (about 34 GB) |
-| `.exfat` image | ShadowMountPlus path: attached as a device and mounted at launch | Yes, one title (about 9.6 GB) |
+| `.exfat` image | ShadowMountPlus path: attached as a device and mounted at launch | Yes, two titles |
 | `.ffpkg` (UFS) image | ShadowMountPlus path | Only the Orbit Store app image; no UFS game image tested |
-| `.ffpfs`, `.ffpfsc` image | ShadowMountPlus path | No |
-| Game folder | ShadowMountPlus path, with execute-bit repair on writable storage | No |
+| `.ffpfs`, `.ffpfsc` image | ShadowMountPlus path | `.ffpfsc`: yes, one title. `.ffpfs`: no |
+| Game folder | ShadowMountPlus path, with execute-bit repair on writable storage | Reported working by the console's owner with one title; no log was collected |
 | Folder or image with `ampr_zstd.index` | AMPR-emu-ng is added to its fakelib (`[kraken] inject_ampr`) | No (host tests only) |
 | USB, M.2, SMB | Scan roots on USB/M.2; SMB is for file management and installation, not scanning | No |
 
