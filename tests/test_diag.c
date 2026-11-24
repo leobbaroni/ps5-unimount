@@ -1078,6 +1078,130 @@ static void test_classification_rules(void) {
   assert(!sm_diag_classify(&rec, &none));
 }
 
+// The hardware case on firmware 13.60: a PS5 debug .pkg a store app installed
+// natively. Not managed (mount_link, ENOENT), LAUNCH_FAILED 0.2 s after the
+// request, no process, CE-109297-8 filed under the title.
+#define INSTALLED_TITLE "PPSA01234"
+
+static sm_diag_record_t *installed_pkg_launch(sm_diag_store_t *store,
+                                              const char *title, int pkg_debug,
+                                              uint32_t console_fw_raw) {
+  sm_diag_input_t input = event(SM_DIAG_EV_LAUNCH, 0);
+  strlcpy(input.title_id, title, sizeof(input.title_id));
+  input.status = ENOENT;
+  input.native_errno = ENOENT;
+  strlcpy(input.layer, "mount_link", sizeof(input.layer));
+  sm_diag_record_t *rec = apply(store, input);
+  rec->console_fw_raw = console_fw_raw;
+  sm_diag_input_t failed = event(SM_DIAG_EV_LAUNCH_FAILED, 0.2);
+  strlcpy(failed.title_id, title, sizeof(failed.title_id));
+  assert(apply(store, failed) == rec);
+  rec->installed_pkg_debug = pkg_debug;
+  char json[512];
+  snprintf(json, sizeof(json),
+           "{\"__appId\":7,\"internalErrorCode\":-2132213704,\"logReport\":\"\","
+           "\"messageBuffer\":\"Can't start the game or app.\",\"shortError\":"
+           "\"CE-109297-8\",\"suggestionType\":-1,\"titleId\":\"%s\","
+           "\"natType\":4,\"alreadyRead\":false,"
+           "\"displayVersion\":\"26.05-13.60.00.07-00.00.00.0.1\"}",
+           title);
+  sm_diag_native_error_t *error = &rec->native_errors[rec->native_error_count++];
+  parse_sample(json, error);
+  strlcpy(error->attribution, "title_id", sizeof(error->attribution));
+  evaluate(rec, 10.3);
+  assert(rec->outcome == SM_DIAG_OUTCOME_SPAWN_FAILED && rec->managed == 0);
+  assert(strstr(rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].detail,
+                "LAUNCH_FAILED and no game process was observed"));
+  return rec;
+}
+
+static void test_installed_debug_pkg(void) {
+  const unsigned char fih[] = {0x7F, 'F', 'I', 'H', 0x00};
+  const unsigned char retail[] = {0x7F, 'C', 'N', 'T'};
+  assert(sm_diag_debug_pkg_magic(fih, sizeof(fih)) == 1);
+  assert(sm_diag_debug_pkg_magic(retail, sizeof(retail)) == 0);
+  assert(sm_diag_debug_pkg_magic(fih, 3) == -1);
+  assert(sm_diag_debug_pkg_magic(NULL, 0) == -1);
+  assert(sm_diag_native_debug_pkg_unavailable(0x1360, NULL));
+  assert(sm_diag_native_debug_pkg_unavailable(0x1360, "kstuff-lite"));
+  assert(!sm_diag_native_debug_pkg_unavailable(0x1360, "kstuff"));
+  assert(!sm_diag_native_debug_pkg_unavailable(0x1160, NULL));
+
+  sm_diag_store_t store;
+  assert(sm_diag_store_init(&store));
+  // Header read and \x7FFIH: observed.
+  sm_diag_record_t *rec = installed_pkg_launch(&store, INSTALLED_TITLE, 1, 0x13600000u);
+  const sm_diag_diagnosis_t *d = &rec->diagnosis;
+  assert(rec->has_diagnosis && !strcmp(d->category, "installed_debug_pkg"));
+  assert(!strcmp(d->confidence, "observed"));
+  assert(!strcmp(d->rule, "installed_debug_pkg_0x80E90038"));
+  assert(strstr(d->evidence[0], "0x80E90038") && strstr(d->evidence[0], "CE-109297-8") &&
+         strstr(d->evidence[0], "attribution=title_id"));
+  bool magic_quoted = false, firmware_quoted = false;
+  for (size_t i = 0; i < d->evidence_count; ++i) {
+    magic_quoted = magic_quoted ||
+        strstr(d->evidence[i], "/user/app/" INSTALLED_TITLE "/app.pkg starts with \\x7FFIH");
+    firmware_quoted = firmware_quoted || strstr(d->evidence[i], "13.60");
+  }
+  assert(magic_quoted && firmware_quoted);
+  assert(strstr(d->advice, "/data/homebrew") && strstr(d->advice, "11.60") &&
+         strstr(d->advice, "Orbit Store"));
+  // The category and the fact survive launches.json.
+  struct json_object *json = sm_diag_record_to_json(rec);
+  sm_diag_record_t restored;
+  assert(sm_diag_record_from_json(json, &restored));
+  json_object_put(json);
+  assert(restored.installed_pkg_debug == 1 &&
+         !strcmp(restored.diagnosis.category, "installed_debug_pkg"));
+
+  // Header not readable (missing file): inferred.
+  rec = installed_pkg_launch(&store, "PPSA01235", -1, 0x13600000u);
+  assert(!strcmp(rec->diagnosis.category, "installed_debug_pkg") &&
+         !strcmp(rec->diagnosis.confidence, "inferred"));
+  // Another magic (retail or encrypted package): not this cause.
+  rec = installed_pkg_launch(&store, "PPSA01236", 0, 0x13600000u);
+  assert(!strcmp(rec->diagnosis.category, "unknown") &&
+         !strcmp(rec->diagnosis.rule, "no_rule_matched"));
+  // Firmware 11.60 installs debug packages natively.
+  rec = installed_pkg_launch(&store, "PPSA01237", 1, 0x11600000u);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  // Firmware unknown.
+  rec = installed_pkg_launch(&store, "PPSA01238", 1, 0);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  // A PS4 title id.
+  rec = installed_pkg_launch(&store, "CUSA01234", 1, 0x13600000u);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  // Managed by UniMount.
+  rec = installed_pkg_launch(&store, "PPSA01239", 1, 0x13600000u);
+  rec->managed = 1;
+  evaluate(rec, 10.4);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  // Another internal code.
+  rec = installed_pkg_launch(&store, "PPSA01240", 1, 0x13600000u);
+  rec->native_errors[0].internal_code = -2135293933;  // 0x80BA0013
+  evaluate(rec, 10.4);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  // No console error attached.
+  rec = installed_pkg_launch(&store, "PPSA01241", 1, 0x13600000u);
+  rec->native_error_count = 0;
+  evaluate(rec, 10.4);
+  assert(!strcmp(rec->diagnosis.category, "unknown"));
+  sm_diag_store_free(&store);
+
+  // A process was observed (it exited early): not a LAUNCH_FAILED spawn.
+  sm_diag_record_t early;
+  failed_record(&early);
+  strlcpy(early.title_id, INSTALLED_TITLE, sizeof(early.title_id));
+  early.managed = 0;
+  early.outcome = SM_DIAG_OUTCOME_EXITED_EARLY;
+  early.pid = 99;
+  early.launch_failed = true;
+  early.installed_pkg_debug = 1;
+  early.console_fw_raw = 0x13600000u;
+  add_native(&early, -2132213704, "CE-109297-8", INSTALLED_TITLE, "title_id");
+  assert(!strcmp(classify(&early)->category, "unknown"));
+}
+
 // --- param.json firmware comparison ---
 
 static void test_param_firmware(void) {
@@ -1286,6 +1410,7 @@ int main(int argc, char **argv) {
   test_pid_reuse_relaunch();
   test_error_history_parser();
   test_classification_rules();
+  test_installed_debug_pkg();
   test_param_firmware();
   test_pldmgr_kstuff();
   test_kernel_log_scan();

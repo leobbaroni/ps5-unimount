@@ -185,6 +185,10 @@ typedef struct {
   bool has_required_fw;
   uint32_t required_fw_bcd; // BCD major.minor, e.g. 0x1360
   char required_fw_raw[24];
+  // Not managed PS5 title whose launch failed: /user/app/<TID>/app.pkg starts
+  // with "\x7FFIH" (plaintext debug package). 1, 0, or -1 when not read or
+  // unreadable.
+  int installed_pkg_debug;
 
   sm_diag_outcome_t outcome;
   bool has_diagnosis;
@@ -356,6 +360,13 @@ bool sm_diag_classify(const sm_diag_record_t *rec, sm_diag_diagnosis_t *out);
 // Category of a native internal error code, or NULL when it is not one of the
 // documented codes.
 const char *sm_diag_native_code_category(uint32_t code);
+// The native_debug_pkg_unavailable limitation: firmware (BCD major.minor)
+// above 11.60 without full kstuff. implementation may be NULL (unknown).
+bool sm_diag_native_debug_pkg_unavailable(uint32_t fw_bcd,
+                                          const char *implementation);
+// First bytes of an installed app.pkg: 1 for the plaintext debug magic
+// "\x7FFIH", 0 for any other magic, -1 when fewer than 4 bytes were read.
+int sm_diag_debug_pkg_magic(const unsigned char *data, size_t size);
 
 // --- Native error history (/system_data/priv/error/history/*.json) ---
 void sm_diag_format_code_hex(int32_t code, char out[11]);

@@ -3537,7 +3537,7 @@ components:
       properties:
         category:
           type: string
-          enum: [permission, mount_busy, corrupt_data, firmware_incompatible, missing_library, fakelib_conflict, kernel_patch, mount_failed, unknown]
+          enum: [permission, mount_busy, corrupt_data, firmware_incompatible, missing_library, fakelib_conflict, installed_debug_pkg, kernel_patch, mount_failed, unknown]
         confidence:
           type: string
           enum: [observed, inferred]
@@ -3599,6 +3599,9 @@ components:
             console_firmware_raw: {type: [integer, "null"]}
             required_firmware: {type: [string, "null"]}
             required_firmware_raw: {type: [string, "null"], example: "0x1360000000000000"}
+            installed_pkg_debug:
+              type: [boolean, "null"]
+              description: Only read for a PS5 title not managed by UniMount whose launch failed. true when /user/app/<TID>/app.pkg starts with \x7FFIH, null when it was not read or could not be read.
         overlay:
           type: object
           properties:

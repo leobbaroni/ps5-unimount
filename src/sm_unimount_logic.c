@@ -1220,7 +1220,8 @@ sm_auto_decision_t sm_auto_decide(const sm_auto_facts_t *f) {
     return SM_AUTO_DUPLICATE;
   if (f->failed_same_key)
     return SM_AUTO_FAILED;
-  if (!f->ownership_ready || f->game_running || f->job_active || !f->stable)
+  if (!f->ownership_ready || f->background_blocked || f->job_active ||
+      !f->stable)
     return SM_AUTO_WAIT;
   return SM_AUTO_START;
 }

@@ -288,7 +288,11 @@ source provides the title (`duplicate`) or failed (`error` with the reason).
 Fields UniMount cannot know keep Kraken's types: `packing`, `cache_built`,
 `backport`, `playgo` are `null`, `cache_size` is 0, `log` is empty,
 `waiting` is `null`. `version` is the Kraken Mount release of the bundled
-engine (`0.3.0`).
+engine (`0.3.0`). `busy` is true while an automatic build runs. `paused` keeps
+its name but means "background work is blocked": a launch or close is in
+progress or the running process is not confirmed as a title yet. A confirmed
+running game or app (such as the store app that downloaded the `.pkg`) does
+not pause the automatic mount; `running` lists its title.
 
 List responses contain `count` and the complete `images` or `games` array.
 Homebrew IDs contain four uppercase ASCII letters and five digits, excluding
@@ -678,7 +682,10 @@ the selected package and registers it from its current path. Package mounts
 are one-shot jobs. The registered source is retained through `mount.lnk` and
 its cache marker. Existing `manual.lst` PKG entries are ignored by the scanner.
 With `[kraken] auto_mount=on` (default) the scanner also starts this job by
-itself for stable plaintext debug base PKGs found in the scan roots; see
+itself for stable plaintext debug base PKGs found in the scan roots, also
+while a confirmed game or app runs (never for the running title itself); it
+waits, and an automatic job in progress is cancelled with `game_active` and
+retried, only while a launch or close is in progress; see
 `docs/unimount-ownership.md`. An explicit request for a file clears the
 automatic mount's remembered failure for it. A title that real Kraken Mount
 registered (its `/data/krakenmount/caches/<TID>/.done`, no `mount.lnk`, no
@@ -922,7 +929,7 @@ or HTTP 404 with `ENOENT`. A launch record contains:
   `app_id`, `started_at`, `exited_at`, `alive_seconds`) or `null`;
   `environment` (`kstuff_loaded`, `shellcore_hooks_installed`,
   `console_firmware`, `console_firmware_raw`, `required_firmware`,
-  `required_firmware_raw`); `overlay` (`captured`, `layers` with
+  `required_firmware_raw`, `installed_pkg_debug`); `overlay` (`captured`, `layers` with
   `label`/`fstype`/`from`/`on`, `fakelib` with `source` and `files`).
 - `game_errors` (sm_mdbg findings), `kernel_log` (`kind`, `attributed`,
   `text`) and `native_errors` (see below, with `attribution` =

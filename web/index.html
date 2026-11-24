@@ -1387,6 +1387,7 @@
           catMountBusy: "Mount busy",
           catCorrupt: "Corrupt data",
           catKernel: "Kernel patch state",
+          catInstalledDebugPkg: "Installed debug package",
           recentLaunches: "Recent launches",
           recentLaunchesHint: "Every launch UniMount observed, newest first",
           errorHistory: "Console errors",
@@ -5003,7 +5004,8 @@
 
   function categoryLabel(category) {
     const key = { mount_failed: "catMountFailed", permission: "catPermission", fakelib_conflict: "catFakelib", firmware_incompatible: "catFirmware",
-      missing_library: "catLibrary", mount_busy: "catMountBusy", corrupt_data: "catCorrupt", kernel_patch: "catKernel", unknown: "unknown" }[category];
+      missing_library: "catLibrary", mount_busy: "catMountBusy", corrupt_data: "catCorrupt", installed_debug_pkg: "catInstalledDebugPkg",
+      kernel_patch: "catKernel", unknown: "unknown" }[category];
     return key ? t(key) : category.replace(/_/g, " ");
   }
 

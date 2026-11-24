@@ -8,12 +8,12 @@
 #include "sm_config_mount.h"
 #include "sm_filesystem.h"
 #include "sm_game_cache.h"
-#include "sm_game_lifecycle.h"
 #include "sm_kraken.h"
 #include "sm_kraken_auto.h"
 #include "sm_log.h"
 #include "sm_pkg.h"
 #include "sm_runtime.h"
+#include "sm_shellcore_service.h"
 #include "sm_stability.h"
 #include "sm_takeover.h"
 #include "sm_types.h"
@@ -223,9 +223,11 @@ void sm_kraken_auto_forget_failure(const char *path) {
   pthread_mutex_unlock(&g_auto.mutex);
 }
 
-bool sm_kraken_auto_game_active(void) {
-  return sm_game_lifecycle_has_active_game() ||
-         !sm_game_lifecycle_background_title(NULL);
+// The scanner's rule for background work, without an active-game guard: an
+// optional automatic build also yields to a launch or close while no game
+// process exists yet (or any more).
+bool sm_kraken_auto_blocked(void) {
+  return sm_shellcore_background_work_blocked();
 }
 
 bool sm_kraken_auto_busy(void) {
@@ -291,7 +293,7 @@ static void process_candidates(void) {
   memcpy(work, g_auto.candidates, AUTO_MAX_CANDIDATES * sizeof(*work));
   pthread_mutex_unlock(&g_auto.mutex);
 
-  bool game_running = sm_kraken_auto_game_active();
+  bool blocked = sm_kraken_auto_blocked();
   sm_game_cache_snapshot_entry_t *games = NULL;
   size_t game_count = 0;
   (void)sm_game_cache_snapshot(&games, &game_count);
@@ -305,7 +307,7 @@ static void process_candidates(void) {
       continue;
     if (should_stop_requested() || runtime_sleep_mode_active())
       break;
-    if (!c->parsed && c->stable && !game_running)
+    if (!c->parsed && c->stable && !blocked)
       parse_candidate(c);
     if (!c->parsed)
       continue;
@@ -313,7 +315,7 @@ static void process_candidates(void) {
     sm_auto_facts_t facts = {
         .enabled = true,
         .ownership_ready = sm_takeover_ownership_ready(),
-        .game_running = game_running,
+        .background_blocked = blocked,
         .job_active = job_active || started,
         .stable = c->stable,
         .eligible = c->eligible,
@@ -339,11 +341,11 @@ static void process_candidates(void) {
     bool started_now = false;
     if (decision == SM_AUTO_START) {
       // Claim before starting: the job's result tap may arrive at any time.
-      // A game may have started while this pass parsed headers.
-      bool game_now = sm_kraken_auto_game_active();
+      // A launch or close may have begun while this pass parsed headers.
+      bool blocked_now = sm_kraken_auto_blocked();
       pthread_mutex_lock(&g_auto.mutex);
       auto_candidate_t *live = find_candidate_locked(c->path);
-      bool claimed = !game_now && !g_auto.job_active && live &&
+      bool claimed = !blocked_now && !g_auto.job_active && live &&
                      live->size == c->size && live->mtime == c->mtime;
       if (claimed) {
         g_auto.job_active = true;

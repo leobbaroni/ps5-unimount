@@ -4355,7 +4355,8 @@ static bool storage_job_cancelled(void *ctx) {
   return cancelled;
 }
 
-// Automatic Kraken jobs also stop as soon as a game becomes active.
+// Automatic Kraken jobs also stop as soon as a launch or close begins; a
+// confirmed running game does not stop them.
 static bool kraken_job_cancelled(void *ctx) {
   uint64_t job_id = (uint64_t)(uintptr_t)ctx;
   pthread_mutex_lock(&g_storage_job.mutex);
@@ -4363,7 +4364,7 @@ static bool kraken_job_cancelled(void *ctx) {
                    g_storage_job.cancel_requested;
   bool automatic = g_storage_job.automatic;
   pthread_mutex_unlock(&g_storage_job.mutex);
-  return cancelled || (automatic && sm_kraken_auto_game_active());
+  return cancelled || (automatic && sm_kraken_auto_blocked());
 }
 
 static void update_storage_job_progress(uint64_t bytes_delta,
@@ -4862,8 +4863,9 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
   if (status)
     log_debug("  [KRAKEN] requested mount stopped: %s status=%d (%s)",
               source, status, operation_error_message(status, error));
-  // The automatic mount retries a cancel caused by a game, rest mode or
-  // shutdown, but not one the user asked for.
+  // The automatic mount retries a cancel caused by a launch or close, rest
+  // mode or shutdown, but not one the user asked for. "game_active" keeps its
+  // API spelling for a launch or close in progress.
   const char *auto_reason = error;
   if (status == ECANCELED) {
     pthread_mutex_lock(&g_storage_job.mutex);
@@ -4872,7 +4874,7 @@ static void run_kraken_job(uint64_t job_id, const char *title_id,
     pthread_mutex_unlock(&g_storage_job.mutex);
     if (by_user && !should_stop_requested() && !runtime_sleep_mode_active())
       auto_reason = SM_AUTO_REASON_USER_CANCELLED;
-    else if (automatic && sm_kraken_auto_game_active())
+    else if (automatic && sm_kraken_auto_blocked())
       auto_reason = "game_active";
   }
   finish_storage_job(job_id, status, false, error);
@@ -5453,9 +5455,10 @@ int sm_api_service_start_kraken_mount(const char *path, const char **error_out) 
     *error_out = errno == EAGAIN ? "kraken_sources_changed" : "kraken_base_invalid";
     return errno == EAGAIN ? EAGAIN : EINVAL;
   }
+  // A running game does not hold the build back; its own title does.
   const char *error = runtime_mutation_block_reason();
   if (!error && (sm_shellcore_title_is_protected(info.title_id) ||
-                 sm_kraken_auto_game_active()))
+                 sm_kraken_auto_blocked()))
     error = "game_active";
   if (error) {
     *error_out = error;

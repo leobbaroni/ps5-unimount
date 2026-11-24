@@ -26,13 +26,14 @@ Kept on purpose, for compatibility: the process name `shadowmountplus.elf`, the 
 
 ## Status
 
-Version 0.1.3 (`VERSION`). It was tested on one console: firmware 13.60, kstuff-lite 1.11, PS5 Payload Manager 0.6.3. The full record is in [`docs/hardware-test-log.md`](docs/hardware-test-log.md). In short:
+Version 0.1.4 (`VERSION`). It was tested on one console: firmware 13.60, kstuff-lite 1.11, PS5 Payload Manager 0.6.3. The full record is in [`docs/hardware-test-log.md`](docs/hardware-test-log.md). In short:
 
 - Verified: a plaintext debug `.pkg` title mounted through the Kraken path and launched, with its process alive past the confirmation window; a `.exfat` image title launched through the ShadowMountPlus path; takeover from a running Kraken Mount; refusal of a Kraken Mount started later; PS5 Payload Manager install, update and rest mode; PKG Manager running beside it; the web interface loaded from the console.
 - Orbit Store: its Games-row app (`PPSA99177.ffpkg`) launched from UniMount and the compatible listener on port 8097 reported the mounted package. An actual Orbit Store download and hand-over was not tested.
 - Since 0.1.1: loading a new copy while one of UniMount's games is running (the new copy waits until the game is closed, then takes over), and stopping UniMount while an image game is running.
 - Since 0.1.2: if UniMount is killed while a game is running, a copy loaded before the game is closed takes over the game's mounts and releases them when it closes.
 - Since 0.1.3: UniMount adds its own home-screen tile (UniMount, under Media) and removes the ShadowMount+ tile; only one copy waits while a mounted game or app is open (the copy loaded last replaces it), and when no UniMount is active because such an app is open, a notice names the app and says that games cannot be started until it is closed. Not tested: removing a Kraken Mount tile, and the repeat of that notice when the console records an error.
+- Since 0.1.4 (not yet tested on hardware): the automatic mount of debug `.pkg` files no longer waits for a running game or app to close, so a package a store app downloads while it is open is added like real Kraken Mount does; it still waits while a game is starting or closing, and never builds the title that is running. A new launch diagnosis, `installed_debug_pkg`, explains a PS5 debug package that was installed on the console instead (it cannot start above firmware 11.60, error CE-109297-8) and says to delete it and let UniMount mount the `.pkg` from a scan folder.
 - Known problem: if UniMount is killed while a game started from a debug `.pkg` is running and that game is closed before UniMount has been loaded again, the console goes down. Load UniMount again first, or close the game before stopping UniMount. See the test log, sections J, K and M.
 
 Not validated (copied from the test log):
@@ -42,7 +43,7 @@ Not validated (copied from the test log):
 - zstd- and LZ4-packed folders (host tests only).
 - A failing launch on hardware: the classifier is tested on the host against real error-history entries, but no launch failed during the hardware runs.
 - Orbit Store downloads and hand-over, and package installation through PKG Manager.
-- Automatic-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken title whose `.pkg` is offline.
+- Automatic mounting while a game or app is running, and its stop and retry when a game is started or closed mid-build; user cancel of an automatic build, and a Kraken title whose `.pkg` is offline.
 
 ## Supported sources
 

@@ -488,6 +488,22 @@ static void capture_environment(const char *title_id, bool read_param,
     read_required_firmware(title_id, env);
 }
 
+// First bytes of a natively installed package (installed_debug_pkg rule). A
+// missing or unreadable file is unknown (-1), never "not a debug package".
+static int read_installed_pkg_magic(const char *title_id) {
+  char path[MAX_PATH];
+  int length = snprintf(path, sizeof(path), "%s/%s/app.pkg", APP_BASE, title_id);
+  if (length < 0 || (size_t)length >= sizeof(path))
+    return -1;
+  int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return -1;
+  unsigned char magic[4];
+  ssize_t got = read(fd, magic, sizeof(magic));
+  close(fd);
+  return sm_diag_debug_pkg_magic(magic, got > 0 ? (size_t)got : 0u);
+}
+
 static void apply_environment(sm_diag_record_t *rec,
                               const launch_environment_t *env, bool anchor,
                               int64_t now_ms, uint64_t now_us) {
@@ -797,6 +813,12 @@ static void process_event(const sm_diag_input_t *input,
   uint64_t record_id = rec ? rec->id : 0;
   bool needs_env = rec && !have_env && rec->kstuff_loaded < 0 &&
                    input->type == SM_DIAG_EV_PROCESS_STARTED;
+  // Only an unmanaged PS5 title whose launch failed without a process gets
+  // its installed app.pkg header read.
+  char pkg_title[SM_DIAG_TITLE_ID_SIZE] = "";
+  if (rec && input->type == SM_DIAG_EV_LAUNCH_FAILED && rec->managed == 0 &&
+      rec->pid <= 0 && strncmp(rec->title_id, "PPSA", 4) == 0)
+    (void)strlcpy(pkg_title, rec->title_id, sizeof(pkg_title));
   if (rec) {
     uint64_t now_us = monotonic_time_us();
     if (have_env)
@@ -829,6 +851,19 @@ static void process_event(const sm_diag_input_t *input,
         rec->error_window_end_mono_us =
             input->mono_us + (uint64_t)cfg->diagnostics_error_window_seconds * 1000000u;
       (void)sm_diag_record_evaluate(rec, &policy, wall_time_ms(), monotonic_time_us());
+    }
+    pthread_mutex_unlock(&g_diag.store_mutex);
+  }
+
+  if (pkg_title[0]) {
+    int magic = read_installed_pkg_magic(pkg_title);
+    pthread_mutex_lock(&g_diag.store_mutex);
+    rec = sm_diag_store_find_id(&g_diag.store, record_id);
+    if (rec && rec->pid <= 0) {
+      uint64_t now_us = monotonic_time_us();
+      rec->installed_pkg_debug = magic;
+      (void)sm_diag_record_evaluate(rec, &policy, wall_time_ms(), now_us);
+      mark_dirty_locked(now_us);
     }
     pthread_mutex_unlock(&g_diag.store_mutex);
   }

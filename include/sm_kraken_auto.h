@@ -26,9 +26,11 @@ void sm_kraken_auto_job_finished(const char *source, int status,
 void sm_kraken_auto_forget_failure(const char *path);
 // True while an automatic job is in flight.
 bool sm_kraken_auto_busy(void);
-// True while a game runs or a background title blocks: automatic jobs do not
-// start and a running automatic job is cancelled (retried later).
-bool sm_kraken_auto_game_active(void);
+// True while background work is blocked (a launch or close is in progress,
+// or the running title is not confirmed yet): automatic jobs do not start and
+// a running automatic job is cancelled (retried later). A confirmed running
+// game does not block; the title it runs is never built (protected title).
+bool sm_kraken_auto_blocked(void);
 
 typedef struct {
   char path[MAX_PATH];

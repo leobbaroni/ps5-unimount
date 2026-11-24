@@ -114,6 +114,7 @@ void sm_diag_record_init(sm_diag_record_t *rec, uint64_t id,
   rec->created_mono_us = now_mono_us;
   rec->kstuff_loaded = -1;
   rec->hooks_installed = -1;
+  rec->installed_pkg_debug = -1;
   rec->outcome = SM_DIAG_OUTCOME_LAUNCH_NOT_OBSERVED;
 }
 
@@ -965,6 +966,23 @@ const char *sm_diag_native_code_category(uint32_t code) {
   return NULL;
 }
 
+bool sm_diag_native_debug_pkg_unavailable(uint32_t fw_bcd,
+                                          const char *implementation) {
+  // Source: EchoStretch/kstuff-lite ps5-kstuff/uelf/fpkg.c:
+  // "if(FWVER > 0x1160) return NULL;" - plaintext package interception is
+  // not armed above 11.60.
+  return fw_bcd > 0x1160u &&
+         !(implementation && strcmp(implementation, "kstuff") == 0);
+}
+
+int sm_diag_debug_pkg_magic(const unsigned char *data, size_t size) {
+  // Source: sm_pkg.c PKG_MAGIC_FIH (0x7F464948), the plaintext debug format
+  // the Kraken path mounts.
+  if (!data || size < 4u)
+    return -1;
+  return memcmp(data, "\177FIH", 4) == 0 ? 1 : 0;
+}
+
 static void add_evidence(sm_diag_diagnosis_t *out, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 static void add_evidence(sm_diag_diagnosis_t *out, const char *fmt, ...) {
@@ -1341,6 +1359,61 @@ static bool rule_corrupt_data(const sm_diag_record_t *rec,
       "(missing or zero-sized files).");
 }
 
+static bool rule_installed_debug_pkg(const sm_diag_record_t *rec,
+                                     sm_diag_diagnosis_t *out) {
+  // Source: this repo's hardware report on firmware 13.60: a PS5 plaintext
+  // debug .pkg installed natively (not mounted by UniMount) failed every
+  // launch within 0.2 s with ShellCore LAUNCH_FAILED and CE-109297-8
+  // (internalErrorCode -2132213704 = 0x80E90038, "Can't start the game or
+  // app."); its /user/app/<TID>/app.pkg started with "\x7FFIH". The code
+  // alone is not documented, so it only counts together with those facts and
+  // the native_debug_pkg_unavailable limitation (kstuff-lite fpkg.c).
+  uint32_t fw_bcd = (rec->console_fw_raw >> 16) & 0xffffu;
+  if (rec->managed != 0 || strncmp(rec->title_id, "PPSA", 4) != 0 ||
+      rec->outcome != SM_DIAG_OUTCOME_SPAWN_FAILED || !rec->launch_failed ||
+      rec->pid > 0 || rec->installed_pkg_debug == 0 || rec->console_fw_raw == 0 ||
+      !sm_diag_native_debug_pkg_unavailable(fw_bcd, NULL))
+    return false;
+  const sm_diag_native_error_t *error = NULL;
+  for (size_t i = 0; i < rec->native_error_count; ++i) {
+    const sm_diag_native_error_t *candidate = &rec->native_errors[i];
+    if (!candidate->has_internal_code ||
+        (uint32_t)candidate->internal_code != 0x80E90038u)
+      continue;
+    if (!error || (strcmp(candidate->attribution, "title_id") == 0 &&
+                   strcmp(error->attribution, "title_id") != 0))
+      error = candidate;
+  }
+  if (!error)
+    return false;
+  native_error_evidence(out, error);
+  if (error->message[0])
+    add_evidence(out, "messageBuffer: %s", error->message);
+  add_evidence(out, "title is not managed by UniMount (installed on the console)");
+  add_evidence(out, "%s: %s", sm_diag_stage_name(SM_DIAG_STAGE_PROCESS_STARTED),
+               rec->stages[SM_DIAG_STAGE_PROCESS_STARTED].detail);
+  if (rec->installed_pkg_debug == 1)
+    add_evidence(out, "/user/app/%s/app.pkg starts with \\x7FFIH (plaintext "
+                      "debug package)", rec->title_id);
+  else
+    add_evidence(out, "/user/app/%s/app.pkg could not be read", rec->title_id);
+  char fw[8];
+  sm_diag_format_fw_bcd(fw_bcd, fw);
+  add_evidence(out, "console firmware %s is above 11.60 "
+                    "(native_debug_pkg_unavailable)", fw);
+  copy_text(out->confidence, sizeof(out->confidence),
+            rec->installed_pkg_debug == 1 ? "observed" : "inferred");
+  copy_text(out->rule, sizeof(out->rule), "installed_debug_pkg_0x80E90038");
+  set_advice(out,
+             "This PS5 package was installed on the console. Firmware above "
+             "11.60 cannot start an installed debug package. Delete the game "
+             "from the home screen, then put its .pkg file in a scan folder "
+             "such as /data/homebrew: UniMount mounts it from there without "
+             "installing it. In Orbit Store, do not use Install for a PS5 "
+             "package; wait until UniMount has added the game.");
+  return true;
+}
+
 static bool rule_kernel_patch(const sm_diag_record_t *rec,
                               sm_diag_diagnosis_t *out) {
   // Source: this repo: main.c waits for kstuff (KEKCALL_CHECK) before
@@ -1377,6 +1450,7 @@ static const classify_rule_t k_classify_rules[] = {
     {"missing_library", rule_missing_library},
     {"mount_busy", rule_mount_busy},
     {"corrupt_data", rule_corrupt_data},
+    {"installed_debug_pkg", rule_installed_debug_pkg},
     {"kernel_patch", rule_kernel_patch},
 };
 
@@ -2177,6 +2251,8 @@ struct json_object *sm_diag_record_to_json(const sm_diag_record_t *rec) {
       json_object_object_add(environment, "required_firmware", NULL);
       json_object_object_add(environment, "required_firmware_raw", NULL);
     }
+    json_object_object_add(environment, "installed_pkg_debug",
+                           tristate_json(rec->installed_pkg_debug));
   }
   json_object_object_add(object, "environment", environment);
 
@@ -2379,6 +2455,7 @@ bool sm_diag_record_from_json(struct json_object *object,
     rec->kstuff_loaded = get_tristate(environment, "kstuff_loaded");
     rec->hooks_installed = get_tristate(environment, "shellcore_hooks_installed");
     rec->console_fw_raw = (uint32_t)get_int(environment, "console_firmware_raw", 0);
+    rec->installed_pkg_debug = get_tristate(environment, "installed_pkg_debug");
     char required[24] = "";
     get_string(environment, "required_firmware_raw", required, sizeof(required));
     if (required[0]) {

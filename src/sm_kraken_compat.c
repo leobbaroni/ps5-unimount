@@ -337,7 +337,7 @@ static char *build_state_json(size_t *length_out) {
       add_value(root, "version", json_object_new_string(KRAKEN_MOUNT_RELEASE)) &&
       add_value(root, "busy", json_object_new_boolean(sm_kraken_auto_busy())) &&
       add_value(root, "paused",
-                json_object_new_boolean(sm_kraken_auto_game_active())) &&
+                json_object_new_boolean(sm_kraken_auto_blocked())) &&
       add_null(root, "waiting") &&
       add_value(root, "running", running) &&
       (!game_active || !running_title[0] ||

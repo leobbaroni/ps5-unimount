@@ -373,7 +373,7 @@ void sm_auto_failure_record(sm_auto_failure_t *list, size_t count,
 void sm_auto_failure_forget(sm_auto_failure_t *list, size_t count,
                             const char *path);
 // Reason the job tap passes for a storage-job cancel the user requested
-// (not rest mode, shutdown or a game starting).
+// (not rest mode, shutdown or a launch or close in progress).
 #define SM_AUTO_REASON_USER_CANCELLED "cancelled_by_user"
 
 // Busy, cancelled or changed-while-reading results are retried, not recorded.
@@ -389,8 +389,8 @@ typedef enum {
 typedef struct {
   bool enabled;            // [kraken] auto_mount
   bool ownership_ready;    // takeover finished
-  bool game_running;
-  bool job_active;         // any storage job / auto job in flight
+  bool background_blocked;  // launch/close in progress (not a running game)
+  bool job_active;        // any storage job / auto job in flight
   bool stable;             // stability wait passed
   bool eligible;           // plaintext debug base PKG (header checks passed)
   bool failed_same_key;    // remembered failure for (path, size, mtime)

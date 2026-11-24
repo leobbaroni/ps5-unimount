@@ -180,11 +180,19 @@ UniMount's own mount result) and `inferred` otherwise.
 | `missing_library` | rtld errors naming `.prx`/`.sprx` modules, listed in the advice | upstream issue #227 rtld format |
 | `mount_busy` | Internal code `0x80940033` (CE-105773-3) | upstream issues #196/#216 |
 | `corrupt_data` | Internal code `0x80940039` (CE-105779-9) | the console's own message for that code |
+| `installed_debug_pkg` | A PS5 (`PPSA`) title not managed by UniMount, ShellCore `LAUNCH_FAILED` with no process (`spawn_failed`), internal code `0x80E90038` (CE-109297-8) attached, and the firmware has the `native_debug_pkg_unavailable` limitation (above 11.60; the record does not know the kstuff build, so only firmware counts). `observed` when `/user/app/<TID>/app.pkg` starts with `\x7FFIH`, `inferred` when that file is missing or unreadable; another magic does not match. The advice says to delete the installed copy and let UniMount mount the `.pkg` from a scan folder | this repo's hardware report (firmware 13.60: a debug `.pkg` a store app installed natively failed every launch within 0.2 s); kstuff-lite `fpkg.c` |
 | `kernel_patch` | kstuff did not answer KEKCALL_CHECK, or the ShellCore hooks were not installed, when the launch was observed | this repo (`main.c`, hooks) |
 | `unknown` | Nothing above matched; all raw evidence is kept | - |
 
 Internal codes outside this table (for example `0x80BA0013`, CE-108262-9) stay
-`unknown`. Error meanings are never guessed.
+`unknown`. Error meanings are never guessed: `0x80E90038` on its own is not
+documented and counts only together with the other `installed_debug_pkg` facts.
+
+The `app.pkg` header (4 bytes) is read on the diagnostics thread when
+ShellCore reports `LAUNCH_FAILED` for a `PPSA` title that is not managed and
+has no process, and for no other launch. The result is the record's
+`environment.installed_pkg_debug` (`true`, `false`, or `null` when not read or
+unreadable).
 
 ### Firmware requirement
 

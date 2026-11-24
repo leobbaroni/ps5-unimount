@@ -301,7 +301,8 @@ static void test_failures(void) {
 
   assert(sm_auto_error_is_transient(EBUSY, "scanner_busy"));
   assert(sm_auto_error_is_transient(ECANCELED, NULL));
-  // Rest mode, shutdown or a game starting cancel a job: retried later.
+  // Rest mode, shutdown or a launch or close in progress cancel a job:
+  // retried later.
   assert(sm_auto_error_is_transient(ECANCELED, "game_active"));
   // A cancel the user asked for is remembered like a failure for this
   // (path, size, mtime), so the job does not restart 10 s later.
@@ -334,7 +335,7 @@ static void test_auto_decide(void) {
   f.eligible = false;  // retail, encrypted, PS4 or patch PKG
   assert(sm_auto_decide(&f) == SM_AUTO_IGNORE);
   f = base;
-  f.game_running = true;
+  f.background_blocked = true;  // a launch or close is in progress
   assert(sm_auto_decide(&f) == SM_AUTO_WAIT);
   f = base;
   f.job_active = true;
@@ -357,9 +358,9 @@ static void test_auto_decide(void) {
   f = base;
   f.registered_conflict = true;
   assert(sm_auto_decide(&f) == SM_AUTO_DUPLICATE);
-  // Another source wins over a remembered failure and a running game.
+  // Another source wins over a remembered failure and a blocked state.
   f.failed_same_key = true;
-  f.game_running = true;
+  f.background_blocked = true;
   assert(sm_auto_decide(&f) == SM_AUTO_DUPLICATE);
 }
 

@@ -405,8 +405,10 @@ error). It closes during rest mode and reopens afterwards.
   reply is abandoned after 2 s, and the stop flag is checked every 100 ms,
   so a slow client cannot hold the listener or delay shutdown. The scanner
   never waits on it.
-- `paused` is true while a game runs or a background title blocks automatic
-  work (the same rule that holds automatic builds back).
+- `paused` is true while background work is blocked: a launch or close is in
+  progress, or the running process is not confirmed as a title yet (the same
+  rule that holds automatic builds back). A confirmed running game or app
+  does not set it.
 
 ## Automatic mounting of debug PKGs (`[kraken] auto_mount`)
 
@@ -422,16 +424,23 @@ SMB, not manual list entries). A worker thread, never the scan thread:
   image or another `.pkg`, or a registration it may not adopt);
 - starts the same storage job as `POST /api/v1/packages/mount`
   (`run_kraken_job`: same guards, same progress in `/api/v1/games/storage/status`),
-  one job at a time and never while a game runs: "a game is active" (a game
-  process or a blocking background title) is checked again right before the
-  job starts, and an automatic job is cancelled as soon as a game becomes
-  active (retried later). Jobs requested through the API are not affected;
+  one job at a time. A confirmed running game or app (for example a store app
+  that downloads the `.pkg`) does not hold the job back, as with real Kraken
+  Mount; only the title it runs is never built. The job waits while
+  background work is blocked, the scanner's rule
+  (`sm_shellcore_background_work_blocked`): a launch is being prepared, a
+  closed title is still being released, a game switch is in progress, or the
+  running process is not confirmed as a title yet. This is checked again right
+  before the job starts, and an automatic job is cancelled as soon as it turns
+  true (reason `game_active`, retried by itself once the block clears: the
+  worker looks again at least every 10 s, and the scan that follows the
+  unblock wakes it at once). Jobs requested through the API are not affected;
 - remembers a failure keyed by (path, size, mtime). It is retried when the file
   changes, after an explicit `/api/v1/packages/mount` of the file, or after a
   restart. A storage-job cancel the user requested
   (`POST /api/v1/games/storage/cancel`) is remembered the same way
   (`error: cancelled_by_user`). Busy results and cancels caused by rest mode,
-  shutdown or a game starting are retried on the next pass;
+  shutdown or a launch or close are retried on the next pass;
 - tracks at most 64 `.pkg` files; further files are not mounted
   automatically, logged once and counted per scan pass in
   `auto_mount.overflow`.

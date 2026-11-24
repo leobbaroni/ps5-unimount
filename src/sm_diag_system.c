@@ -532,10 +532,8 @@ struct json_object *sm_diag_system_report(void) {
     add_limitation(&limitations, "registration_unavailable", "error",
                    "Per-title registration (%s) is unavailable: %s",
                    registration.path, registration.reason);
-  // Source: EchoStretch/kstuff-lite ps5-kstuff/uelf/fpkg.c:
-  // "if(FWVER > 0x1160) return NULL;" - plaintext package interception is
-  // not armed above 11.60.
-  if (fw_bcd > 0x1160u && strcmp(implementation, "kstuff") != 0)
+  // Source: see sm_diag_native_debug_pkg_unavailable() (kstuff-lite fpkg.c).
+  if (sm_diag_native_debug_pkg_unavailable(fw_bcd, implementation))
     add_limitation(&limitations, "native_debug_pkg_unavailable", "info",
                    "Native debug .pkg installation is not available on firmware "
                    "%s: kstuff-lite does not arm plaintext package interception "
