@@ -130,8 +130,11 @@ In the PS5 browser the D-pad moves, cross selects and circle closes the browser.
 ## Working with other payloads
 
 - **Orbit Store.** Its home-screen app is an image that UniMount mounts, and UniMount answers on
-  the port Orbit Store uses to talk to Kraken Mount. Load UniMount before Orbit Store. A download
-  handed over from Orbit Store has not been tested.
+  the port Orbit Store uses to talk to Kraken Mount. Load UniMount before Orbit Store. A PS5
+  `.pkg` that Orbit Store downloads is added by UniMount within about half a minute, also while
+  Orbit Store stays open (since 0.1.4). Do not use Orbit Store's **Install** for a PS5 package:
+  an installed debug package cannot start above firmware 11.60. PS4 packages are installed as
+  usual.
 - **PKG Manager** and **BFpilot** ran beside UniMount without conflict.
 - **Kraken Mount, ShadowMountPlus:** not needed; see above.
 
@@ -168,6 +171,13 @@ The full list is in [`config.ini.example`](../config.ini.example).
   and `bind_address` is not `127.0.0.1`.
 - **Kraken Mount reports that its port is busy.** That is UniMount keeping it out. Remove Kraken
   Mount from autoload.
+- **A PS5 game was installed from a `.pkg` and fails with CE-109297-8.** Above firmware 11.60 an
+  installed debug package cannot start; its **Diagnostics** says "Installed debug package". If
+  you still have the `.pkg`, delete the game on the home screen and copy the `.pkg` into a scan
+  folder. If the download is gone, the installed copy can be reused: with a file manager such as
+  BFpilot move `/user/app/<TITLE ID>/app.pkg` to `/data/homebrew/`, then open the game in
+  UniMount's Library, choose **Remove** and uninstall it. UniMount adds it again from the moved
+  file.
 - **After a restart of the console** everything has to be loaded again, as with any payload. With
   autoload set up as above this happens by itself after the jailbreak. Rest mode does not stop
   UniMount.

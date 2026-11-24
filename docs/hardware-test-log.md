@@ -330,6 +330,47 @@ was staged: these are the console's own launch records of normal use, and what i
   collected, and the game list showed Title B as an `.exfat` image when the records were read.
 - The error history still held 61 files.
 
+### P. Seventh session: a package installed natively, automatic mount beside a running app (0.1.4) — pass
+
+Run on 2026-11-24 in the same boot, on the build of commit `be8a740` (reported as `0.1.4`,
+`v0.1.3-2-gbe8a74`), the file published as `unimount_v0.1.4.elf`.
+
+The failure that led to this build was found on 0.1.3 in normal use, from the console's log and
+Orbit Store's own installation record; it was not staged. Orbit Store downloaded a PS5 plaintext
+debug `.pkg` (Title E, 2.4 GB) into `/data/homebrew` and asked for a rescan through the
+Kraken-compatible API. The automatic mount was paused, because the Orbit Store app itself was
+running, so the package was never parsed or built; Orbit Store's record read `kraken:
+unconfirmed` after 100 checks. The package was then installed natively through Orbit Store and
+the download deleted. Each of five starts failed within 0.2 s: ShellCore `LAUNCH_FAILED`,
+`CE-109297-8` (`0x80E90038`), no process, diagnosis `unknown`. A second debug package (Title F,
+122 GB) finished downloading in the same state and also stayed unmounted while the app was open.
+
+Checks on `be8a740`:
+
+1. Ten seconds after 0.1.4 started, with no app running, the automatic mount built Title F:
+   `[AUTO] building`, registered 9 s later, `[AUTO] ...: mounted`. Pass.
+2. Diagnosis. Title E, still installed natively, was started once: `spawn_failed`, category
+   `installed_debug_pkg`, confidence `observed`, rule `installed_debug_pkg_0x80E90038`, with the
+   evidence lines for the error entry, the unmanaged title, `app.pkg starts with FIH` and the
+   firmware. One new error-history file (70), as intended. Pass.
+3. Automatic mount beside a running app. With the Orbit Store app running, `/api/state` on port
+   8097 reported `paused: false`. Title E's installed `app.pkg` was moved into `/data/homebrew`
+   with the console's file manager (same file system, no copy) and renamed. The automatic mount
+   parsed it and reported `duplicate` while the native registration existed. After
+   `POST /api/v1/games/uninstall` for the title, the state read `building` within 5 s and `ready`
+   12 s later, with the app still running. `/user/app/<TITLE_E>` then held `sce_sys`,
+   `icon0.png` and `mount.lnk`. Pass.
+4. Title E was started through the API (`replace`) from the running app: every stage `ok`,
+   `running_confirmed`, no new error. Pass.
+5. Title A, Title B and Title F were each started, reached `running_confirmed` and were closed.
+   The error history stayed at 70 files. Pass.
+
+Not run: a launch or close beginning during an automatic build (the build is stopped and retried;
+builds took 9 to 12 s here); the start of a UniMount title during a build, which can fail once
+because the build holds ShellCore's mutation flag; an Orbit Store download finishing while 0.1.4
+runs with the app open (the moved file stood in for it); and the `inferred` form of the
+diagnosis.
+
 ## Repeating these checks
 
 The commands used by hand in these runs are scripted in `tools/hwtest/`, for a PC on the same LAN:
@@ -362,7 +403,8 @@ the ones recorded above.
   real error-history entries (CE-107750-0, CE-105779-9, CE-105773-3, CE-108262-9), but no launch
   failed while UniMount was running. The 16 failures in section N happened with no UniMount
   active, so no launch record was written for them.
-- Orbit Store downloads and hand-over, and package installation through PKG Manager (see C and E).
+- An Orbit Store download finishing while UniMount runs (section P used a moved file instead),
+  and package installation through PKG Manager (see C and E).
 - A cold-boot autoload of UniMount: it is in the autoload list after kstuff-lite, but no restart
   was run after that. After each of the two crashes Payload Manager came back with its autoload
   sequence aborted, so every payload was loaded by hand.
@@ -372,5 +414,6 @@ the ones recorded above.
 - Of the stop handling: a second stop request and the STOP file while a game runs.
 - Of adoption: see the end of section M.
 - Of the tile and the waiting copy (0.1.3): see the end of section N.
-- Auto-mount pausing when a game starts mid-build, user cancel of an automatic build, and a Kraken
+- The stop and retry of an automatic build when a game starts or closes mid-build, the start of
+  a UniMount title during a build, user cancel of an automatic build, and a Kraken
   title whose `.pkg` is offline.
